@@ -119,6 +119,15 @@ function splitWikiTarget(raw) {
   return { file: target.trim(), heading, alias };
 }
 
+/** 链接目标中的百分号编码还原为文件系统路径（%20→空格等）；非法编码原样返回 */
+function fsPath(p) {
+  try {
+    return decodeURIComponent(p);
+  } catch {
+    return p;
+  }
+}
+
 function pushWikiLink(state, file, heading, label) {
   const open = state.push("link_open", "a", 1);
   open.attrSet("href", "#");
@@ -336,7 +345,7 @@ async function resolveWikiAssets(container, baseDir) {
       } else {
         // 图片/音视频嵌入：先按相对路径解析；Obsidian 语义下图片常在库内
         // 其他目录（如 attachments/），找不到时按文件名递归查找（≤3 层）
-        let abs = await invoke("resolve_path", { baseDir, relative: file }).catch(() => null);
+        let abs = await invoke("resolve_path", { baseDir, relative: fsPath(file) }).catch(() => null);
         if (!abs && file && !file.includes("/") && !file.includes("\\")) {
           abs = await invoke("find_wiki_target", { baseDir, name: file }).catch(() => null);
         }
@@ -409,10 +418,10 @@ async function rewriteImages(tokens, baseDir) {
         // 仅图片/音视频扩展名允许走 asset 协议，防止任意本地文件被读取
         if (!mediaKind(src.split(/[?#]/)[0])) continue;
         if (isAbsoluteWin(src)) {
-          c.attrSet("src", convertFileSrc(src));
+          c.attrSet("src", convertFileSrc(fsPath(src)));
         } else {
           jobs.push(
-            invoke("resolve_path", { baseDir, relative: src })
+            invoke("resolve_path", { baseDir, relative: fsPath(src) })
               .then((abs) => {
                 if (abs) c.attrSet("src", convertFileSrc(abs));
               })
@@ -667,7 +676,7 @@ els.content.addEventListener("click", (e) => {
     invoke("plugin:opener|open_url", { url: href }).catch(console.error);
   } else if (/\.(md|markdown|mdown|mkd)$/i.test(href) && currentDir) {
     e.preventDefault();
-    invoke("resolve_path", { baseDir: currentDir, relative: href })
+    invoke("resolve_path", { baseDir, relative: fsPath(href) })
       .then(openFile)
       .catch(console.error);
   }
