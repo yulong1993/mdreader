@@ -72,6 +72,25 @@ fn resolve_path(base_dir: String, relative: String) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// 保存编辑内容。扩展名白名单与 read_file 一致；先写同目录临时文件再原子替换，避免写一半损坏原文档。
+#[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+    let allowed = Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| TEXT_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .unwrap_or(false);
+    if !allowed {
+        return Err("仅允许保存 Markdown / 文本文档".into());
+    }
+    let tmp = format!("{path}.mdtmp");
+    fs::write(&tmp, content.as_bytes()).map_err(|e| format!("写入失败: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("替换原文件失败: {e}")
+    })
+}
+
 /// 监听指定文件，变更（保存）时向前端发送 "fs-changed" 事件。同一时刻只监听当前文件。
 #[tauri::command]
 fn watch_file(
@@ -154,8 +173,7 @@ fn initial_path(state: State<'_, InitialPath>) -> Option<String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
+pub fn run() {    tauri::Builder::default()
         // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给已运行的实例
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -172,6 +190,7 @@ pub fn run() {
         .manage(InitialPath(std::env::args().nth(1)))
         .invoke_handler(tauri::generate_handler![
             read_file,
+            write_file,
             resolve_path,
             watch_file,
             find_wiki_target,
@@ -179,4 +198,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running mdreader");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_file_原子替换与白名单() {
+        let dir = std::env::temp_dir().join("mdreader-write-test");
+        fs::create_dir_all(&dir).unwrap();
+        let md = dir.join("t.md");
+        fs::write(&md, "old").unwrap();
+
+        write_file(md.to_string_lossy().into_owned(), "new 内容".into()).unwrap();
+        assert_eq!(fs::read_to_string(&md).unwrap(), "new 内容");
+        assert!(!dir.join("t.md.mdtmp").exists(), "不应残留临时文件");
+
+        let exe = dir.join("evil.exe");
+        assert!(write_file(exe.to_string_lossy().into_owned(), "x".into()).is_err());
+        assert!(!exe.exists(), "白名单外文件不应被创建");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_编码识别往返() {
+        let dir = std::env::temp_dir().join("mdreader-read-test");
+        fs::create_dir_all(&dir).unwrap();
+        let md = dir.join("enc.md");
+
+        fs::write(&md, "\u{FEFF}带 BOM 的中文").unwrap();
+        assert_eq!(read_file(md.to_string_lossy().into_owned()).unwrap(), "带 BOM 的中文");
+
+        // 手工构造 UTF-16LE（encoding_rs.encode 的 output-encoding 语义会返回 UTF-8，不可用于造测试数据）
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "UTF16 内容".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        fs::write(&md, &bytes).unwrap();
+        assert_eq!(read_file(md.to_string_lossy().into_owned()).unwrap(), "UTF16 内容");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

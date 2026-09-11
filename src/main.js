@@ -1,6 +1,7 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { full as emoji } from "markdown-it-emoji";
@@ -327,11 +328,11 @@ async function resolveWikiAssets(container, baseDir) {
         }
         let path = null;
         if (/\.(md|markdown|mdown|mkd)$/i.test(file)) {
-          path = await invoke("resolve_path", { baseDir, relative: file }).catch(() => null);
+          path = await resolveRel(baseDir, fsPath(file));
         }
         if (!path && file) {
           // 无扩展名：先按相对路径补 .md（覆盖 sub/name 写法），再子目录递归查找
-          path = await invoke("resolve_path", { baseDir, relative: file + ".md" }).catch(() => null);
+          path = await resolveRel(baseDir, fsPath(file) + ".md");
         }
         if (!path && file) {
           path = await invoke("find_wiki_target", { baseDir, name: file }).catch(() => null);
@@ -345,7 +346,7 @@ async function resolveWikiAssets(container, baseDir) {
       } else {
         // 图片/音视频嵌入：先按相对路径解析；Obsidian 语义下图片常在库内
         // 其他目录（如 attachments/），找不到时按文件名递归查找（≤3 层）
-        let abs = await invoke("resolve_path", { baseDir, relative: fsPath(file) }).catch(() => null);
+        let abs = await resolveRel(baseDir, fsPath(file));
         if (!abs && file && !file.includes("/") && !file.includes("\\")) {
           abs = await invoke("find_wiki_target", { baseDir, name: file }).catch(() => null);
         }
@@ -421,11 +422,10 @@ async function rewriteImages(tokens, baseDir) {
           c.attrSet("src", convertFileSrc(fsPath(src)));
         } else {
           jobs.push(
-            invoke("resolve_path", { baseDir, relative: fsPath(src) })
+            resolveRel(baseDir, fsPath(src))
               .then((abs) => {
                 if (abs) c.attrSet("src", convertFileSrc(abs));
               })
-              .catch(() => {})
           );
         }
       }
@@ -441,7 +441,8 @@ const els = {
   fileName: document.querySelector("#file-name"),
   welcome: document.querySelector("#welcome"),
   content: document.querySelector("#content"),
-  contentWrap: document.querySelector("#content-wrap"),
+  previewPane: document.querySelector("#preview-pane"),
+  editor: document.querySelector("#editor"),
   outline: document.querySelector("#outline"),
 };
 
@@ -451,6 +452,123 @@ let currentSource = null;
 let mermaidModule = null;
 let renderSeq = 0; // 丢弃过期渲染，避免快速切换文件时旧内容覆盖新内容
 let openSeq = 0;
+
+/* --------------------------------- 编辑模式 -------------------------------- */
+
+let editing = false;
+let editorDirty = false;
+let suppressFsOnce = false; // 自己保存触发的 fs-changed 不再回灌
+let editorDebounceId = null;
+
+// 路径解析缓存（缓存 Promise；失败不缓存以便重试）——编辑时防抖重渲染避免 invoke 风暴
+const resolveCache = new Map();
+function resolveRel(baseDir, relative) {
+  const key = baseDir + "\u0000" + relative;
+  if (resolveCache.has(key)) return resolveCache.get(key);
+  const p = invoke("resolve_path", { baseDir, relative })
+    .then((r) => {
+      if (r == null) resolveCache.delete(key);
+      return r;
+    })
+    .catch(() => {
+      resolveCache.delete(key);
+      return null;
+    });
+  resolveCache.set(key, p);
+  return p;
+}
+
+function updateDirtyHint() {
+  const name = currentPath ? basename(currentPath) : "未打开文件";
+  els.fileName.textContent = editorDirty ? `${name} ●未保存` : name;
+  els.fileName.title = currentPath || "";
+  document.title = `${editorDirty ? "● " : ""}${currentPath ? basename(currentPath) : "MD Reader"} - MD Reader`;
+}
+
+function setEditing(on) {
+  if (on && !currentPath) return; // 未打开文档不可编辑
+  if (on === editing) return;
+  editing = on;
+  document.body.classList.toggle("editing", on);
+  document.querySelector("#btn-edit").textContent = on ? "👁 预览" : "✏️ 编辑";
+  if (on) {
+    els.editor.value = currentSource ?? "";
+    editorDirty = false;
+    updateDirtyHint();
+    els.editor.focus();
+  } else {
+    renderDoc(els.editor.value); // 退出编辑时预览同步最终内容（保留脏标记）
+  }
+}
+
+async function saveFile() {
+  if (!editing || !currentPath || !editorDirty) return;
+  try {
+    await invoke("write_file", { path: currentPath, content: els.editor.value });
+    suppressFsOnce = true;
+    editorDirty = false;
+    updateDirtyHint();
+  } catch (e) {
+    alert(`保存失败：${e}`);
+  }
+}
+
+/** 有未保存修改时询问：保存后继续（对话框异常时默认保存，避免丢字） */
+async function confirmSaveBefore() {
+  if (!editing || !editorDirty) return;
+  const save = await invoke("plugin:dialog|ask", {
+    message: "有未保存的修改，保存后继续？",
+    title: "MD Reader",
+    kind: "warning",
+  }).catch(() => true);
+  if (save) await saveFile();
+}
+
+els.editor.addEventListener("input", () => {
+  editorDirty = true;
+  updateDirtyHint();
+  clearTimeout(editorDebounceId);
+  editorDebounceId = setTimeout(() => {
+    if (!editing) return;
+    const pane = els.previewPane;
+    const ratio =
+      pane.scrollHeight > pane.clientHeight
+        ? pane.scrollTop / (pane.scrollHeight - pane.clientHeight)
+        : 0;
+    renderDoc(els.editor.value).finally(() => {
+      pane.scrollTop = ratio * (pane.scrollHeight - pane.clientHeight);
+    });
+  }, 400);
+});
+
+els.editor.addEventListener("keydown", (e) => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const { selectionStart, selectionEnd } = els.editor;
+    els.editor.setRangeText("  ", selectionStart, selectionEnd, "end");
+    editorDirty = true;
+    updateDirtyHint();
+  }
+});
+
+// 关闭窗口前：脏状态询问，保存或放弃
+getCurrentWindow().onCloseRequested(async (event) => {
+  if (!(editing && editorDirty)) return;
+  event.preventDefault();
+  const save = await invoke("plugin:dialog|ask", {
+    message: "有未保存的修改，保存后关闭？",
+    title: "MD Reader",
+    kind: "warning",
+  }).catch(() => true);
+  if (save && currentPath) {
+    try {
+      await invoke("write_file", { path: currentPath, content: els.editor.value });
+    } catch {
+      /* 保存失败也允许关闭（用户已被告知） */
+    }
+  }
+  await getCurrentWindow().destroy();
+});
 
 /* --------------------------------- 文档渲染 -------------------------------- */
 
@@ -521,9 +639,9 @@ async function renderMermaidBlocks() {
 
 function rerender() {
   if (currentSource != null) {
-    const scrollTop = els.contentWrap.scrollTop;
+    const scrollTop = els.previewPane.scrollTop;
     renderDoc(currentSource).finally(() => {
-      els.contentWrap.scrollTop = scrollTop;
+      els.previewPane.scrollTop = scrollTop;
     });
   }
 }
@@ -566,15 +684,19 @@ function dirname(p) {
 /** 打开文件；focusHeading 可选，渲染后滚动到对应标题 */
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
+  await confirmSaveBefore(); // 切换文档前处理未保存修改
   const source = await invoke("read_file", { path });
   if (seq !== openSeq) return; // 已有更新的打开请求
   currentPath = path;
   currentDir = dirname(path);
-  els.fileName.textContent = basename(path);
-  els.fileName.title = path;
-  document.title = `${basename(path)} - MD Reader`;
+  updateDirtyHint();
   invoke("watch_file", { path }).catch((e) => console.error("watch failed:", e));
   await renderDoc(source);
+  if (editing) {
+    els.editor.value = source;
+    editorDirty = false;
+    updateDirtyHint();
+  }
   if (focusHeading) {
     scrollToHeading(focusHeading);
   }
@@ -608,6 +730,8 @@ document.querySelector("#btn-open").addEventListener("click", pickFile);
 
 document.querySelector("#btn-pdf").addEventListener("click", () => window.print());
 
+document.querySelector("#btn-edit").addEventListener("click", () => setEditing(!editing));
+
 document.querySelector("#btn-theme").addEventListener("click", () => {
   const next =
     THEME_ORDER[(THEME_ORDER.indexOf(themePref()) + 1) % THEME_ORDER.length];
@@ -633,6 +757,14 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
     e.preventDefault();
     window.print();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
+    e.preventDefault();
+    setEditing(!editing);
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    saveFile();
   }
 });
 
@@ -676,9 +808,7 @@ els.content.addEventListener("click", (e) => {
     invoke("plugin:opener|open_url", { url: href }).catch(console.error);
   } else if (/\.(md|markdown|mdown|mkd)$/i.test(href) && currentDir) {
     e.preventDefault();
-    invoke("resolve_path", { baseDir, relative: fsPath(href) })
-      .then(openFile)
-      .catch(console.error);
+    resolveRel(currentDir, fsPath(href)).then((p) => p && openFile(p)).catch(console.error);
   }
 });
 
@@ -691,14 +821,20 @@ getCurrentWebview().onDragDropEvent((event) => {
   }
 });
 
-// 文件保存后自动刷新（保持滚动位置）
+// 文件保存后自动刷新（保持滚动位置）；编辑模式自写抑制
 listen("fs-changed", async (e) => {
   if (e.payload !== currentPath) return;
-  const scrollTop = els.contentWrap.scrollTop;
+  if (suppressFsOnce) {
+    suppressFsOnce = false;
+    return;
+  }
+  const scrollTop = els.previewPane.scrollTop;
   try {
     const source = await invoke("read_file", { path: currentPath });
+    if (editing && editorDirty) return; // 编辑未保存期间忽略外部变化（用户编辑优先）
     await renderDoc(source);
-    els.contentWrap.scrollTop = scrollTop;
+    if (editing) els.editor.value = source;
+    else els.previewPane.scrollTop = scrollTop;
   } catch {
     /* 编辑器保存过程中的瞬时不可读，忽略 */
   }

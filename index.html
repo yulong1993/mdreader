@@ -12,25 +12,30 @@
         <span id="file-name" title="">未打开文件</span>
         <span class="tb-spacer"></span>
         <button id="btn-pdf" class="tb-btn" title="导出 PDF / 打印 (Ctrl+P)">🖨 PDF</button>
+        <button id="btn-edit" class="tb-btn" title="编辑 (Ctrl+E)，Ctrl+S 保存">✏️ 编辑</button>
         <button id="btn-outline" class="tb-btn icon" title="显示/隐藏大纲 (Ctrl+\)">☰</button>
         <button id="btn-theme" class="tb-btn icon" title="切换主题：自动 / 浅色 / 深色">◐</button>
       </header>
       <div id="main">
         <nav id="outline" aria-label="文档大纲"></nav>
         <div id="content-wrap">
-          <div id="welcome">
-            <div class="card">
-              <div class="logo">📄</div>
-              <h1>MD Reader</h1>
-              <p>把 Markdown 文件拖进窗口，或按 <kbd>Ctrl</kbd>+<kbd>O</kbd> 打开</p>
-              <ul class="features">
-                <li>GitHub 风格渲染：表格、任务列表、代码高亮、Emoji</li>
-                <li>数学公式 <code>$...$</code> 与 Mermaid 图表</li>
-                <li>文件保存后自动刷新 · 大纲导航 · 亮 / 暗主题</li>
-              </ul>
+          <textarea id="editor" hidden spellcheck="false"></textarea>
+          <div id="preview-pane">
+            <div id="welcome">
+              <div class="card">
+                <div class="logo">📄</div>
+                <h1>MD Reader</h1>
+                <p>把 Markdown 文件拖进窗口，或按 <kbd>Ctrl</kbd>+<kbd>O</kbd> 打开</p>
+                <ul class="features">
+                  <li>GitHub 风格渲染：表格、任务列表、代码高亮、Emoji</li>
+                  <li>数学公式 <code>$...$</code> 与 Mermaid 图表</li>
+                  <li>文件保存后自动刷新 · 大纲导航 · 亮 / 暗主题</li>
+                  <li><code>Ctrl+E</code> 分屏编辑，<code>Ctrl+S</code> 保存</li>
+                </ul>
+              </div>
             </div>
+            <article id="content" class="markdown-body" hidden></article>
           </div>
-          <article id="content" class="markdown-body" hidden></article>
         </div>
       </div>
     </div>

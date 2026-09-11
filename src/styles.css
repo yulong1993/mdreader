@@ -139,9 +139,47 @@ body {
 
 #content-wrap {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
   min-width: 0;
+  overflow: hidden;
+}
+
+#preview-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
   scroll-behavior: smooth;
+}
+
+/* --------------------------------- 编辑模式 -------------------------------- */
+
+#editor {
+  display: none;
+  width: 46%;
+  min-width: 220px;
+  height: 100%;
+  padding: 16px 18px;
+  border: none;
+  border-right: 1px solid var(--border);
+  outline: none;
+  resize: none;
+  background: var(--tb-bg);
+  color: var(--fg);
+  font-family: var(--code-font);
+  font-size: 14px;
+  line-height: 1.7;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-y: auto;
+}
+
+body.editing #editor {
+  display: block;
+}
+
+body.editing #content {
+  max-width: none;
+  padding: 16px 26px;
 }
 
 /* GitHub 版心：980px 内容宽 + 45px 内边距 */
@@ -232,15 +270,18 @@ pre.mermaid-error {
 
 @media print {
   #toolbar,
-  #outline {
+  #outline,
+  #editor {
     display: none !important;
   }
   #app {
     display: block;
     height: auto;
   }
-  #content-wrap {
+  #content-wrap,
+  #preview-pane {
     overflow: visible;
+    display: block;
   }
   .markdown-body {
     max-width: none;
