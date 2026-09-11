@@ -47,7 +47,15 @@ npm run tauri build
 
 - `nsis/mdreader_0.1.0_x64-setup.exe` —— 推荐安装这个（含 `.md` 文件关联）
 - `msi/mdreader_0.1.0_x64_en-US.msi` —— MSI 安装包
-- `../mdreader.exe` —— 单文件绿色版（无法注册文件关联）
+- `../mdreader.exe` —— 单文件绿色版（见下节「绿色版部署」）
+
+## 绿色版部署（本机当前方案）
+
+1. 把 `src-tauri/target/release/mdreader.exe` 复制到固定目录（本机为 `D:\Tools\MDReader\`），**之后不要移动路径**——文件关联指向该路径
+2. 双击导入 `tools/portable-associate.reg`（写 HKCU 级 `.md`/`.markdown` 关联，优先于坚果云的机器级注册）
+3. 导入后重启资源管理器或注销重登一次，让 shell 刷新关联缓存
+4. 想撤销：导入 `tools/portable-unassociate.reg`，`.md` 自动回落到原有关联
+5. 程序更新：重新 `npm run tauri build` 后覆盖 exe 即可，关联不受影响
 
 注意：
 

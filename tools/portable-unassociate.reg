@@ -1,0 +1,14 @@
+Windows Registry Editor Version 5.00
+
+; 撤销 MD Reader 绿色版关联
+; .md/.markdown 删除 HKCU 覆盖值后，自动回落到系统原有关联（本机为坚果云的 HKLM 注册）
+
+[-HKEY_CURRENT_USER\Software\Classes\MDReader.md]
+
+[-HKEY_CURRENT_USER\Software\Classes\MDReader.markdown]
+
+[HKEY_CURRENT_USER\Software\Classes\.md]
+@=-
+
+[HKEY_CURRENT_USER\Software\Classes\.markdown]
+@=-

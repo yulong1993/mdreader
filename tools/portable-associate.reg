@@ -1,0 +1,29 @@
+Windows Registry Editor Version 5.00
+
+; MD Reader 绿色版文件关联（当前用户，等效安装器的 fileAssociations）
+; 前提：mdreader.exe 位于下方路径；若放在别处请全局替换路径
+; 导入后需重启资源管理器 / 注销重登（或由程序广播 SHChangeNotify）才对已运行的 shell 生效
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.md]
+@="Markdown Document (MD Reader)"
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.md\DefaultIcon]
+@="D:\\Tools\\MDReader\\mdreader.exe,0"
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.md\shell\open\command]
+@="\"D:\\Tools\\MDReader\\mdreader.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\.md]
+@="MDReader.md"
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.markdown]
+@="Markdown Document (MD Reader)"
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.markdown\DefaultIcon]
+@="D:\\Tools\\MDReader\\mdreader.exe,0"
+
+[HKEY_CURRENT_USER\Software\Classes\MDReader.markdown\shell\open\command]
+@="\"D:\\Tools\\MDReader\\mdreader.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\.markdown]
+@="MDReader.markdown"
