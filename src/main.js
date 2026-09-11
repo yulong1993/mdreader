@@ -473,9 +473,16 @@ async function renderMermaidBlocks() {
       );
       const div = document.createElement("div");
       div.className = "mermaid-figure";
-      // mermaid 输出同样过一遍消毒，避免渲染器漏洞成为 XSS 旁路
+      // mermaid 输出同样过一遍消毒，避免渲染器漏洞成为 XSS 旁路。
+      // foreignObject（mermaid 节点文字都放在里面）需三重放行：
+      // 1) ADD_TAGS 允许标签本身（默认在 svgDisallowed 名单）
+      // 2) HTML_INTEGRATION_POINTS 允许其内的 HTML 子元素（默认表只认 annotation-xml，
+      //    3.4.15 起 HTML 元素出现在未列入集成点的 SVG 父节点下会被判命名空间非法而删除）
+      // 内部 HTML（div/span 等）仍走正常允许名单与属性清洗，script/on* 一律剥离
       div.innerHTML = DOMPurify.sanitize(svg, {
-        ADD_ATTR: ["marker-end", "viewBox", "startoffset", "baseline-shift"],
+        ADD_TAGS: ["foreignObject"],
+        HTML_INTEGRATION_POINTS: { foreignobject: true },
+        ADD_ATTR: ["marker-end", "viewBox", "startoffset", "baseline-shift", "xmlns"],
       });
       code.parentElement.replaceWith(div);
     } catch {
