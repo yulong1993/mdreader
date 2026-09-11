@@ -161,7 +161,15 @@ function obsidianInline(md) {
         const tok = state.push("image", "img", 0);
         tok.attrSet("src", "data:,"); // 占位，稍后由 DOM 解析 pass 填充
         tok.attrSet("data-wikisrc", file);
-        tok.attrSet("alt", label);
+        // Obsidian 尺寸语法：|200 或 |100x200 → width/height；其余作为 alt 文本
+        const size = /^\s*(\d+)(?:x(\d+))?\s*$/.exec(alias);
+        if (size) {
+          tok.attrSet("width", size[1]);
+          if (size[2]) tok.attrSet("height", size[2]);
+          tok.attrSet("alt", label === alias ? file : label);
+        } else {
+          tok.attrSet("alt", label);
+        }
         tok.children = [];
       } else if (kind === "audio" || kind === "video") {
         const tag = kind === "audio" ? "audio" : "video";
@@ -326,8 +334,17 @@ async function resolveWikiAssets(container, baseDir) {
           el.classList.add("wikilink-missing");
         }
       } else {
-        const abs = await invoke("resolve_path", { baseDir, relative: file }).catch(() => null);
-        if (abs) el.setAttribute("src", convertFileSrc(abs));
+        // 图片/音视频嵌入：先按相对路径解析；Obsidian 语义下图片常在库内
+        // 其他目录（如 attachments/），找不到时按文件名递归查找（≤3 层）
+        let abs = await invoke("resolve_path", { baseDir, relative: file }).catch(() => null);
+        if (!abs && file && !file.includes("/") && !file.includes("\\")) {
+          abs = await invoke("find_wiki_target", { baseDir, name: file }).catch(() => null);
+        }
+        if (abs) {
+          el.setAttribute("src", convertFileSrc(abs));
+        } else {
+          el.classList.add("wikilink-missing");
+        }
       }
     })
   );
@@ -396,7 +413,9 @@ async function rewriteImages(tokens, baseDir) {
         } else {
           jobs.push(
             invoke("resolve_path", { baseDir, relative: src })
-              .then((abs) => c.attrSet("src", convertFileSrc(abs)))
+              .then((abs) => {
+                if (abs) c.attrSet("src", convertFileSrc(abs));
+              })
               .catch(() => {})
           );
         }

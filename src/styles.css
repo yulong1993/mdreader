@@ -303,6 +303,17 @@ html[data-theme="dark"] .markdown-body mark {
   text-decoration: line-through dotted;
   cursor: default;
 }
+img.wikilink-missing,
+audio.wikilink-missing,
+video.wikilink-missing {
+  text-decoration: none;
+  border: 1px dashed var(--muted);
+  border-radius: 6px;
+  padding: 12px;
+  min-width: 48px;
+  min-height: 24px;
+  opacity: 0.6;
+}
 
 .markdown-body audio,
 .markdown-body video {

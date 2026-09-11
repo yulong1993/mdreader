@@ -61,14 +61,15 @@ fn read_file(path: String) -> Result<String, String> {
 }
 
 /// 把 Markdown 里的相对资源路径（图片等）解析为绝对路径，前端再转成 asset 协议 URL。
+/// 把相对资源路径解析为真实存在的绝对路径（canonicalize，Windows 下带 \\?\ 前缀）。
+/// 文件不存在时返回 None——绝不能返回拼接出来的假路径，否则 asset 协议会 404。
 #[tauri::command]
-fn resolve_path(base_dir: String, relative: String) -> String {
+fn resolve_path(base_dir: String, relative: String) -> Option<String> {
     let joined = Path::new(&base_dir).join(relative.replace('/', r"\"));
     joined
         .canonicalize()
-        .unwrap_or(joined)
-        .to_string_lossy()
-        .into_owned()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// 监听指定文件，变更（保存）时向前端发送 "fs-changed" 事件。同一时刻只监听当前文件。
