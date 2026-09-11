@@ -1,0 +1,384 @@
+/* 应用外壳（工具栏 / 大纲 / 欢迎页）；正文样式由 github-markdown-css 提供 */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --border: #d1d9e0;
+  --muted: #59636e;
+  --accent: #0969da;
+  --tb-bg: #f6f8fa;
+  --hover: #eef1f4;
+  --code-font: "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
+  --sans-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    Helvetica, Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+html[data-theme="dark"] {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --border: #3d444d;
+  --muted: #9198a1;
+  --accent: #4493f8;
+  --tb-bg: #151b23;
+  --hover: #1c2129;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: var(--sans-font);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: 44px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* --------------------------------- 工具栏 --------------------------------- */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--tb-bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.tb-btn {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.tb-btn:hover {
+  background: var(--hover);
+  border-color: var(--border);
+}
+.tb-btn.icon {
+  font-size: 15px;
+  padding: 4px 9px;
+}
+
+#file-name {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45vw;
+}
+
+.tb-spacer {
+  flex: 1;
+}
+
+/* --------------------------------- 主区域 --------------------------------- */
+
+#main {
+  display: flex;
+  min-height: 0;
+}
+
+#outline {
+  width: 250px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 14px 8px;
+  border-right: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#outline[hidden] {
+  display: none;
+}
+#outline a {
+  display: block;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#outline a:hover {
+  color: var(--accent);
+  background: var(--hover);
+}
+#outline a.lvl-1 {
+  font-weight: 600;
+  color: var(--fg);
+}
+#outline a.lvl-2 {
+  padding-left: 22px;
+}
+#outline a.lvl-3 {
+  padding-left: 34px;
+}
+#outline a.lvl-4,
+#outline a.lvl-5,
+#outline a.lvl-6 {
+  padding-left: 46px;
+}
+
+#content-wrap {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+  scroll-behavior: smooth;
+}
+
+/* GitHub 版心：980px 内容宽 + 45px 内边距 */
+.markdown-body {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 32px 45px;
+  font-family: var(--sans-font);
+}
+.markdown-body pre code,
+.markdown-body tt,
+.markdown-body code {
+  font-family: var(--code-font);
+}
+
+.mermaid-figure {
+  text-align: center;
+  margin: 16px 0;
+}
+.mermaid-figure svg {
+  max-width: 100%;
+}
+pre.mermaid-error {
+  border: 1px dashed #d1242f;
+}
+
+/* --------------------------------- 欢迎页 --------------------------------- */
+
+#welcome {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#welcome[hidden] {
+  display: none;
+}
+#welcome .card {
+  text-align: center;
+  color: var(--muted);
+  padding: 48px 56px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+#welcome .logo {
+  font-size: 52px;
+  margin-bottom: 8px;
+}
+#welcome h1 {
+  color: var(--fg);
+  margin: 0 0 12px;
+  font-size: 22px;
+}
+#welcome p {
+  margin: 0 0 18px;
+}
+#welcome kbd {
+  font-family: var(--code-font);
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--tb-bg);
+  color: var(--fg);
+}
+#welcome .features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 2;
+}
+#welcome .features code {
+  font-family: var(--code-font);
+  background: var(--tb-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+/* --------------------------------- 打印/PDF -------------------------------- */
+
+@page {
+  margin: 16mm 14mm;
+}
+
+@media print {
+  #toolbar,
+  #outline {
+    display: none !important;
+  }
+  #app {
+    display: block;
+    height: auto;
+  }
+  #content-wrap {
+    overflow: visible;
+  }
+  .markdown-body {
+    max-width: none;
+    padding: 0;
+  }
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre,
+  table,
+  .obsidian-callout,
+  .mermaid-figure,
+  img,
+  svg {
+    break-inside: avoid;
+  }
+  tr {
+    break-inside: avoid;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    break-after: avoid;
+  }
+  audio,
+  video {
+    display: none !important;
+  }
+}
+
+/* --------------------------- Obsidian 扩展样式 ---------------------------- */
+
+.markdown-body mark {
+  background: #fff8c5;
+  color: inherit;
+  padding: 0.1em 0.2em;
+  border-radius: 3px;
+}
+html[data-theme="dark"] .markdown-body mark {
+  background: rgba(187, 128, 9, 0.45);
+}
+
+.markdown-body .md-tag {
+  display: inline-block;
+  font-size: 0.82em;
+  line-height: 1.6;
+  padding: 1px 9px;
+  margin: 0 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.wikilink-missing {
+  color: var(--muted) !important;
+  text-decoration: line-through dotted;
+  cursor: default;
+}
+
+.markdown-body audio,
+.markdown-body video {
+  display: block;
+  margin: 10px 0;
+  max-width: 100%;
+}
+
+/* Obsidian callout：颜色由 --oc-color 驱动，亮/暗各定义一版 */
+.obsidian-callout {
+  --oc-color: #57606a;
+  border-left: 4px solid var(--oc-color);
+  background: color-mix(in srgb, var(--oc-color) 7%, transparent);
+  border-radius: 6px;
+  padding: 4px 14px;
+  margin: 16px 0;
+}
+.obsidian-callout > p:first-child {
+  margin-top: 8px;
+}
+.obsidian-callout .oc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--oc-color);
+  margin: 10px 0 6px;
+}
+.obsidian-callout.oc-foldable > .oc-title {
+  cursor: pointer;
+  user-select: none;
+}
+.obsidian-callout.oc-foldable > .oc-title::after {
+  content: "▾";
+  margin-left: auto;
+  font-size: 0.85em;
+  transition: transform 0.15s ease;
+}
+.obsidian-callout.oc-collapsed > .oc-title {
+  margin-bottom: 10px;
+}
+.obsidian-callout.oc-collapsed > .oc-title::after {
+  transform: rotate(-90deg);
+}
+
+.oc-note, .oc-info, .oc-abstract, .oc-todo { --oc-color: #0969da; }
+.oc-tip, .oc-success, .oc-question     { --oc-color: #1a7f37; }
+.oc-warning                            { --oc-color: #9a6700; }
+.oc-failure, .oc-danger, .oc-bug,
+.oc-caution                            { --oc-color: #cf222e; }
+.oc-example, .oc-important             { --oc-color: #8250df; }
+.oc-quote, .oc-cite                    { --oc-color: #57606a; }
+
+html[data-theme="dark"] .oc-note, html[data-theme="dark"] .oc-info,
+html[data-theme="dark"] .oc-abstract, html[data-theme="dark"] .oc-todo { --oc-color: #4493f8; }
+html[data-theme="dark"] .oc-tip, html[data-theme="dark"] .oc-success,
+html[data-theme="dark"] .oc-question   { --oc-color: #3fb950; }
+html[data-theme="dark"] .oc-warning    { --oc-color: #d29922; }
+html[data-theme="dark"] .oc-failure, html[data-theme="dark"] .oc-danger,
+html[data-theme="dark"] .oc-bug, html[data-theme="dark"] .oc-caution { --oc-color: #f85149; }
+html[data-theme="dark"] .oc-example, html[data-theme="dark"] .oc-important { --oc-color: #ab7df8; }
+html[data-theme="dark"] .oc-quote, html[data-theme="dark"] .oc-cite { --oc-color: #9198a1; }
+
+/* --------------------------------- 滚动条 --------------------------------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

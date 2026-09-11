@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="180" viewBox="0 0 480 180">
+  <rect x="0" y="0" width="480" height="180" rx="12" fill="#0969da"/>
+  <text x="240" y="80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="34" font-weight="700" fill="#ffffff" text-anchor="middle">MD Reader</text>
+  <text x="240" y="118" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" fill="#ddf4ff" text-anchor="middle">GitHub 风格 · 表格 / 颜色 / 符号 / 高亮</text>
+  <circle cx="60" cy="90" r="26" fill="#ffffff" opacity="0.15"/>
+  <circle cx="420" cy="90" r="26" fill="#ffffff" opacity="0.15"/>
+</svg>
