@@ -1,7 +1,6 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { full as emoji } from "markdown-it-emoji";
@@ -513,15 +512,9 @@ async function saveFile() {
   }
 }
 
-/** 有未保存修改时询问：保存后继续（对话框异常时默认保存，避免丢字） */
+/** 切换文档前：有未保存修改则自动保存（Obsidian 默认行为；避免原生对话框在此环境不可用导致的卡死） */
 async function confirmSaveBefore() {
-  if (!editing || !editorDirty) return;
-  const save = await invoke("plugin:dialog|ask", {
-    message: "有未保存的修改，保存后继续？",
-    title: "MD Reader",
-    kind: "warning",
-  }).catch(() => true);
-  if (save) await saveFile();
+  if (editing && editorDirty) await saveFile();
 }
 
 els.editor.addEventListener("input", () => {
@@ -549,25 +542,6 @@ els.editor.addEventListener("keydown", (e) => {
     editorDirty = true;
     updateDirtyHint();
   }
-});
-
-// 关闭窗口前：脏状态询问，保存或放弃
-getCurrentWindow().onCloseRequested(async (event) => {
-  if (!(editing && editorDirty)) return;
-  event.preventDefault();
-  const save = await invoke("plugin:dialog|ask", {
-    message: "有未保存的修改，保存后关闭？",
-    title: "MD Reader",
-    kind: "warning",
-  }).catch(() => true);
-  if (save && currentPath) {
-    try {
-      await invoke("write_file", { path: currentPath, content: els.editor.value });
-    } catch {
-      /* 保存失败也允许关闭（用户已被告知） */
-    }
-  }
-  await getCurrentWindow().destroy();
 });
 
 /* --------------------------------- 文档渲染 -------------------------------- */
