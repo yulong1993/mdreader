@@ -456,6 +456,7 @@ let currentSource = null;
 let mermaidModule = null;
 let renderSeq = 0; // 丢弃过期渲染，避免快速切换文件时旧内容覆盖新内容
 let openSeq = 0;
+let headingLineById = new Map(); // 标题 id → 源码行号：大纲点击时同步定位编辑框
 
 /* --------------------------------- 编辑模式 -------------------------------- */
 
@@ -499,7 +500,11 @@ function setEditing(on) {
     els.editor.value = currentSource ?? "";
     editorDirty = false;
     updateDirtyHint();
+    // 给 textarea 赋值会把光标甩到文末并滚到底部，显式回到顶部
+    els.editor.scrollTop = 0;
+    els.previewPane.scrollTop = 0;
     els.editor.focus();
+    els.editor.setSelectionRange(0, 0);
   } else {
     renderDoc(els.editor.value); // 退出编辑时预览同步最终内容（保留脏标记）
   }
@@ -622,6 +627,16 @@ async function renderDoc(source) {
   const body = stripFrontmatter(source);
 
   const tokens = md.parse(body, {});
+  // 标题 id → 源码行号（加上 frontmatter 占的行数），大纲点击时据此定位编辑框
+  const fmLines = (source.slice(0, source.length - body.length).match(/\n/g) || [])
+    .length;
+  headingLineById = new Map();
+  for (const t of tokens) {
+    if (t.type === "heading_open" && t.map) {
+      const id = t.attrGet("id");
+      if (id) headingLineById.set(id, fmLines + t.map[0]);
+    }
+  }
   if (currentDir) await rewriteImages(tokens, currentDir);
   if (seq !== renderSeq) return;
 
@@ -692,6 +707,24 @@ function rerender() {
 
 /* ---------------------------------- 大纲 ---------------------------------- */
 
+/** 编辑框滚动到源码某行，光标放到该行行首（方便接着编辑该章节） */
+function scrollEditorToLine(line) {
+  const text = els.editor.value;
+  let pos = 0;
+  for (let i = 0; i < line; i++) {
+    const next = text.indexOf("\n", pos);
+    if (next < 0) {
+      pos = text.length;
+      break;
+    }
+    pos = next + 1;
+  }
+  els.editor.focus();
+  els.editor.setSelectionRange(pos, pos);
+  // 光标滚入视口通常落在视口边缘，再上抬一截让该行上方留出上下文
+  els.editor.scrollTop = Math.max(0, els.editor.scrollTop - els.editor.clientHeight * 0.25);
+}
+
 function buildOutline() {
   const headings = [...els.content.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter(
     (h) => h.id
@@ -703,9 +736,15 @@ function buildOutline() {
     a.className = `lvl-${h.tagName[1]}`;
     a.textContent = h.textContent;
     a.title = h.textContent;
+    const line = headingLineById.get(h.id);
+    if (line != null) a.dataset.srcline = String(line);
     a.addEventListener("click", (e) => {
       e.preventDefault();
       h.scrollIntoView({ behavior: "smooth", block: "start" });
+      // 编辑模式：源码框同步跳到该标题所在行
+      if (editing && a.dataset.srcline != null) {
+        scrollEditorToLine(+a.dataset.srcline);
+      }
     });
     els.outline.appendChild(a);
   }
@@ -747,6 +786,8 @@ async function openFile(path, focusHeading) {
     els.editor.value = source;
     editorDirty = false;
     updateDirtyHint();
+    els.editor.scrollTop = 0;
+    els.editor.setSelectionRange(0, 0);
   }
   if (focusHeading) {
     scrollToHeading(focusHeading);
