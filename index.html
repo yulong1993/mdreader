@@ -40,5 +40,17 @@
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
+    <div id="modal-overlay" hidden>
+      <div id="close-dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+        <div class="dlg-icon">⚠️</div>
+        <h2 id="dlg-title">有未保存的修改</h2>
+        <p id="dlg-text"></p>
+        <div class="dlg-buttons">
+          <button id="dlg-save-exit" class="primary">保存并退出</button>
+          <button id="dlg-exit">直接退出</button>
+          <button id="dlg-cancel">取消</button>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

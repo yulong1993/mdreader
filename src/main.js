@@ -1,6 +1,7 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { full as emoji } from "markdown-it-emoji";
@@ -541,6 +542,67 @@ els.editor.addEventListener("keydown", (e) => {
     els.editor.setRangeText("  ", selectionStart, selectionEnd, "end");
     editorDirty = true;
     updateDirtyHint();
+  }
+});
+
+/**
+ * 应用内关闭确认对话框（Office 三按钮式）。不依赖原生对话框——
+ * 上版原生 plugin:dialog|ask 在部分环境不返回导致窗口无法关闭。
+ * @returns {"save"|"exit"|"cancel"}
+ */
+function showCloseDialog(fileName) {
+  return new Promise((resolve) => {
+    const overlay = document.querySelector("#modal-overlay");
+    document.querySelector("#dlg-text").textContent =
+      `「${fileName}」有未保存的修改，退出前要保存吗？未保存的修改将被丢弃。`;
+    overlay.hidden = false;
+    const saveBtn = document.querySelector("#dlg-save-exit");
+
+    const done = (val) => {
+      overlay.hidden = true;
+      cleanup();
+      resolve(val);
+    };
+    const onClick = { "#dlg-save-exit": "save", "#dlg-exit": "exit", "#dlg-cancel": "cancel" };
+    const bound = [];
+    for (const [sel, val] of Object.entries(onClick)) {
+      const el = document.querySelector(sel);
+      const fn = () => done(val);
+      el.addEventListener("click", fn);
+      bound.push([el, fn]);
+    }
+    const onKey = (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done("cancel");
+      else if (e.key === "Enter") done("save");
+    };
+    const onBackdrop = (e) => {
+      if (e.target === overlay) done("cancel");
+    };
+    overlay.addEventListener("mousedown", onBackdrop);
+    document.addEventListener("keydown", onKey, true);
+    function cleanup() {
+      for (const [el, fn] of bound) el.removeEventListener("click", fn);
+      overlay.removeEventListener("mousedown", onBackdrop);
+      document.removeEventListener("keydown", onKey, true);
+    }
+    saveBtn.focus();
+  });
+}
+
+// 关闭窗口：有未保存修改时弹应用内确认；任何异常都放行关闭，绝不卡死窗口
+getCurrentWindow().onCloseRequested(async (event) => {
+  try {
+    if (!(editing && editorDirty)) return; // 无修改 → 正常关闭
+    event.preventDefault();
+    if (!document.querySelector("#modal-overlay").hidden) return; // 已在询问中
+    const choice = await showCloseDialog(basename(currentPath));
+    if (choice === "cancel") return; // 留在当前页面
+    if (choice === "save") await saveFile();
+    await getCurrentWindow().destroy();
+  } catch (err) {
+    console.error("close guard failed:", err);
+    await getCurrentWindow().destroy().catch(() => {});
   }
 });
 

@@ -316,6 +316,74 @@ pre.mermaid-error {
   }
 }
 
+/* ------------------------------ 应用内对话框 ------------------------------- */
+
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+#modal-overlay[hidden] {
+  display: none;
+}
+
+#close-dialog {
+  min-width: 360px;
+  max-width: 440px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 22px 24px 18px;
+  text-align: center;
+}
+#close-dialog .dlg-icon {
+  font-size: 34px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+#close-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+#close-dialog p {
+  margin: 0 0 18px;
+  font-size: 13px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.dlg-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.dlg-buttons button {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--tb-bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.dlg-buttons button:hover {
+  background: var(--hover);
+}
+.dlg-buttons button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.dlg-buttons button.primary:hover {
+  filter: brightness(1.08);
+}
+
 /* --------------------------- Obsidian 扩展样式 ---------------------------- */
 
 .markdown-body mark {
