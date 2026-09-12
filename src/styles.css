@@ -151,35 +151,35 @@ body {
   scroll-behavior: smooth;
 }
 
-/* --------------------------------- 编辑模式 -------------------------------- */
+/* --------------------------------- 实时编辑 -------------------------------- */
 
-#editor {
-  display: none;
-  width: 46%;
-  min-width: 220px;
-  height: 100%;
-  padding: 16px 18px;
-  border: none;
-  border-right: 1px solid var(--border);
-  outline: none;
-  resize: none;
-  background: var(--tb-bg);
-  color: var(--fg);
+/* 编辑模式：块可点击进入编辑，悬停给虚线提示 */
+body.editing #content {
+  cursor: text;
+}
+body.editing #content > *:not(.block-editor):hover {
+  outline: 1px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+/* 被编辑的块：源码形态就地展开（宽度与正文一致，高度随内容） */
+.block-editor {
+  width: 100%;
+  min-height: 2.6em;
   font-family: var(--code-font);
   font-size: 14px;
   line-height: 1.7;
-  tab-size: 2;
+  padding: 10px 12px;
+  margin: 8px 0;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--tb-bg);
+  color: var(--fg);
+  resize: none;
+  overflow: hidden;
   white-space: pre-wrap;
-  overflow-y: auto;
-}
-
-body.editing #editor {
-  display: block;
-}
-
-body.editing #content {
-  max-width: none;
-  padding: 16px 26px;
+  tab-size: 2;
+  outline: none;
 }
 
 /* GitHub 版心：980px 内容宽 + 45px 内边距 */
@@ -271,7 +271,7 @@ pre.mermaid-error {
 @media print {
   #toolbar,
   #outline,
-  #editor {
+  .block-editor {
     display: none !important;
   }
   #app {

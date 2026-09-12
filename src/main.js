@@ -446,7 +446,6 @@ const els = {
   welcome: document.querySelector("#welcome"),
   content: document.querySelector("#content"),
   previewPane: document.querySelector("#preview-pane"),
-  editor: document.querySelector("#editor"),
   outline: document.querySelector("#outline"),
 };
 
@@ -456,16 +455,21 @@ let currentSource = null;
 let mermaidModule = null;
 let renderSeq = 0; // 丢弃过期渲染，避免快速切换文件时旧内容覆盖新内容
 let openSeq = 0;
-let headingLineById = new Map(); // 标题 id → 源码行号：大纲点击时同步定位编辑框
 
-/* --------------------------------- 编辑模式 -------------------------------- */
+/* ------------------------- 实时编辑（块级，Obsidian 式） ------------------------- */
+// 渲染视图里点击一个顶层块（段落/标题/列表/表格/代码块…），该块就地变成源码编辑框；
+// 提交后立即渲染回所见即所得形态。块的源码行区间来自 markdown-it 的 token.map。
 
-let editing = false;
-let editorDirty = false;
+let editing = false; // 编辑模式开关（Ctrl+E）
+let editorDirty = false; // 自上次保存后是否有修改
 let suppressFsOnce = false; // 自己保存触发的 fs-changed 不再回灌
-let editorDebounceId = null;
+let blockRuns = []; // 顶层块列表：{ s, e } 源码绝对行区间（含 frontmatter 偏移），{ ts, te } token 区间
+let activeBlockEdit = null; // 正在编辑的块 { ta, j, s, e, orig, origEl }
+let pendingOpenBlockIdx = null; // 提交当前块后要接着打开的块（块间跳转用）
 
-// 路径解析缓存（缓存 Promise；失败不缓存以便重试）——编辑时防抖重渲染避免 invoke 风暴
+/* --------------------------------- 路径解析缓存 -------------------------------- */
+
+// 缓存 Promise；失败不缓存以便重试
 const resolveCache = new Map();
 function resolveRel(baseDir, relative) {
   const key = baseDir + "\u0000" + relative;
@@ -493,28 +497,146 @@ function updateDirtyHint() {
 function setEditing(on) {
   if (on && !currentPath) return; // 未打开文档不可编辑
   if (on === editing) return;
+  if (!on) commitActiveBlock(); // 退出编辑前先落定当前块
   editing = on;
   document.body.classList.toggle("editing", on);
   document.querySelector("#btn-edit").textContent = on ? "👁 预览" : "✏️ 编辑";
-  if (on) {
-    els.editor.value = currentSource ?? "";
-    editorDirty = false;
-    updateDirtyHint();
-    // 给 textarea 赋值会把光标甩到文末并滚到底部，显式回到顶部
-    els.editor.scrollTop = 0;
-    els.previewPane.scrollTop = 0;
-    els.editor.focus();
-    els.editor.setSelectionRange(0, 0);
-  } else {
-    renderDoc(els.editor.value); // 退出编辑时预览同步最终内容（保留脏标记）
+}
+
+/** 把正在编辑的块内容合入源码（纯数据操作；内容区由随后的重渲染重建） */
+function absorbActiveBlock(source) {
+  const ed = activeBlockEdit;
+  if (!ed) return source;
+  activeBlockEdit = null;
+  const norm = (s) => s.replace(/\r?\n/g, "\n");
+  let val = ed.ta.value;
+  if (norm(val) === norm(ed.orig)) return source;
+  // textarea 会把 \r\n 归一成 \n，CRLF 文档写回时还原行尾
+  if (source.includes("\r\n")) val = val.replace(/\r?\n/g, "\r\n");
+  const lines = source.split("\n");
+  if (val.trim() === "") lines.splice(ed.s, ed.e - ed.s); // 清空整个块 = 删除该块
+  else lines.splice(ed.s, ed.e - ed.s, ...val.split("\n"));
+  editorDirty = true;
+  updateDirtyHint();
+  return lines.join("\n");
+}
+
+/** 结束当前块的编辑：无变化就地把原渲染元素换回；有变化则合入源码并重渲染。
+ *  @returns {Promise|null} 有变化时返回渲染完成的 Promise（打印等场景需要等待） */
+function commitActiveBlock() {
+  const ed = activeBlockEdit;
+  if (!ed) return null;
+  const norm = (s) => s.replace(/\r?\n/g, "\n");
+  if (norm(ed.ta.value) === norm(ed.orig)) {
+    ed.ta.replaceWith(ed.origEl);
+    activeBlockEdit = null;
+    if (pendingOpenBlockIdx != null) {
+      const j = pendingOpenBlockIdx;
+      pendingOpenBlockIdx = null;
+      openBlockEdit(j);
+    }
+    return null;
+  }
+  currentSource = absorbActiveBlock(currentSource);
+  return renderDoc(currentSource).then(() => {
+    els.content.querySelector(`[data-blk="${ed.j}"]`)?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function cancelActiveBlock() {
+  const ed = activeBlockEdit;
+  if (!ed) return;
+  activeBlockEdit = null;
+  ed.ta.replaceWith(ed.origEl);
+}
+
+function autoGrow(ta) {
+  ta.style.height = "auto";
+  ta.style.height = `${ta.scrollHeight}px`;
+}
+
+/** 第 j 个顶层块就地变成源码编辑框 */
+function openBlockEdit(j) {
+  const run = blockRuns[j];
+  if (!run) return;
+  const el = els.content.querySelector(`#content > [data-blk="${j}"]`);
+  if (!el) return;
+  const src = currentSource.split("\n").slice(run.s, run.e).join("\n");
+  const ta = document.createElement("textarea");
+  ta.className = "block-editor";
+  ta.spellcheck = false;
+  ta.value = src;
+  activeBlockEdit = { ta, j, s: run.s, e: run.e, orig: src, origEl: el };
+  el.replaceWith(ta);
+  autoGrow(ta);
+  ta.focus();
+  ta.setSelectionRange(0, 0);
+  ta.addEventListener("input", () => autoGrow(ta));
+  ta.addEventListener("keydown", onBlockKeydown);
+  ta.addEventListener("blur", onBlockBlur);
+}
+
+function onBlockKeydown(e) {
+  if (!activeBlockEdit) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    cancelActiveBlock(); // 放弃本块的修改
+  } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    commitActiveBlock(); // Ctrl+Enter 提交
+  } else if (e.key === "Tab") {
+    e.preventDefault();
+    const { selectionStart: a, selectionEnd: b } = e.target;
+    e.target.setRangeText("  ", a, b, "end");
+    autoGrow(e.target);
   }
 }
 
+// 切到其他应用（relatedTarget 为 null）不打断编辑；点到应用内其他位置则先落定
+function onBlockBlur(e) {
+  if (activeBlockEdit && e.relatedTarget !== null) commitActiveBlock();
+}
+
+// 点到应用内任意位置：正编辑某块时先落定；编辑模式下点到另一个块，落定后接着打开那块
+document.addEventListener(
+  "mousedown",
+  (e) => {
+    if (!activeBlockEdit || !e.target.closest) return;
+    if (e.target.closest(".block-editor")) return;
+    const blk = e.target.closest("#content > [data-blk]");
+    if (editing && blk) {
+      e.preventDefault(); // 焦点与选区交给接下来的块编辑流程
+      pendingOpenBlockIdx = +blk.dataset.blk;
+    }
+    commitActiveBlock();
+  },
+  true
+);
+
+// 编辑模式下点击块进入编辑；链接点击仍走导航（Obsidian 行为）；拖选文字复制时不触发
+els.content.addEventListener("click", (e) => {
+  if (!editing || activeBlockEdit) return;
+  if (e.target.closest(".block-editor")) return;
+  if (e.target.closest("a")) return;
+  if (window.getSelection().toString()) return;
+  const blk = e.target.closest("#content > [data-blk]");
+  if (blk) {
+    e.stopImmediatePropagation(); // 块编辑优先于折叠等原有交互
+    openBlockEdit(+blk.dataset.blk);
+  }
+});
+
 /** @returns {Promise<boolean>} 是否保存成功（无待保存修改视为成功） */
 async function saveFile() {
-  if (!editing || !currentPath || !editorDirty) return true;
+  if (!editing || !currentPath) return true;
+  if (activeBlockEdit) {
+    // 块内正在编辑的内容先合入源码再落盘（renderDoc 顺带清掉编辑框 DOM）
+    currentSource = absorbActiveBlock(currentSource);
+    renderDoc(currentSource);
+  }
+  if (!editorDirty) return true;
   try {
-    await invoke("write_file", { path: currentPath, content: els.editor.value });
+    await invoke("write_file", { path: currentPath, content: currentSource });
     suppressFsOnce = true;
     editorDirty = false;
     updateDirtyHint();
@@ -525,38 +647,12 @@ async function saveFile() {
   }
 }
 
-/** 切换文档前：有未保存修改则自动保存（Obsidian 式）；保存失败返回 false，调用方留在当前文档 */
+/** 切换文档前：块内未落定的修改先合入，有未保存修改则自动保存（Obsidian 式）；失败返回 false */
 async function confirmSaveBefore() {
+  if (editing && activeBlockEdit) currentSource = absorbActiveBlock(currentSource);
   if (editing && editorDirty) return saveFile();
   return true;
 }
-
-els.editor.addEventListener("input", () => {
-  editorDirty = true;
-  updateDirtyHint();
-  clearTimeout(editorDebounceId);
-  editorDebounceId = setTimeout(() => {
-    if (!editing) return;
-    const pane = els.previewPane;
-    const ratio =
-      pane.scrollHeight > pane.clientHeight
-        ? pane.scrollTop / (pane.scrollHeight - pane.clientHeight)
-        : 0;
-    renderDoc(els.editor.value).finally(() => {
-      pane.scrollTop = ratio * (pane.scrollHeight - pane.clientHeight);
-    });
-  }, 400);
-});
-
-els.editor.addEventListener("keydown", (e) => {
-  if (e.key === "Tab") {
-    e.preventDefault();
-    const { selectionStart, selectionEnd } = els.editor;
-    els.editor.setRangeText("  ", selectionStart, selectionEnd, "end");
-    editorDirty = true;
-    updateDirtyHint();
-  }
-});
 
 /**
  * 应用内关闭确认对话框（Office 三按钮式）。不依赖原生对话框——
@@ -606,6 +702,11 @@ function showCloseDialog(fileName) {
 // 关闭窗口：有未保存修改时弹应用内确认；任何异常都放行关闭，绝不卡死窗口
 getCurrentWindow().onCloseRequested(async (event) => {
   try {
+    if (editing && activeBlockEdit) {
+      // Alt+F4 等键盘关闭路径没有 mousedown，块内未落定的修改先合入
+      currentSource = absorbActiveBlock(currentSource);
+      renderDoc(currentSource);
+    }
     if (!(editing && editorDirty)) return; // 无修改 → 正常关闭
     event.preventDefault();
     if (!document.querySelector("#modal-overlay").hidden) return; // 已在询问中
@@ -621,22 +722,60 @@ getCurrentWindow().onCloseRequested(async (event) => {
 
 /* --------------------------------- 文档渲染 -------------------------------- */
 
+/** 顶层块的源码行区间。markdown-it 块 token 带 map=[起始行,结束行)，
+ *  顶层块从 level 0 的带 map token 开始，到嵌套深度归零结束 */
+function collectBlockRuns(tokens, fmLines) {
+  const runs = [];
+  let start = -1;
+  let end = -1;
+  let ts = -1;
+  let depth = 0;
+  tokens.forEach((t, i) => {
+    if (start < 0) {
+      if (t.level !== 0 || !t.map) return;
+      start = t.map[0];
+      end = t.map[1];
+      ts = i;
+    }
+    depth += t.nesting;
+    if (t.map && t.map[1] > end) end = t.map[1];
+    if (depth === 0) {
+      runs.push({ s: fmLines + start, e: fmLines + end, ts, te: i });
+      start = -1;
+    }
+  });
+  return runs;
+}
+
+/** 给 #content 的顶层元素标上块号，实时编辑点击时据此找到源码行区间。
+ *  raw HTML 块可能产出 0 或多个元素，逐块探测渲染计数防错位 */
+function attachBlockIndexes(tokens) {
+  const kids = els.content.children;
+  let ki = 0;
+  for (let j = 0; j < blockRuns.length && ki < kids.length; j++) {
+    const run = blockRuns[j];
+    let n = 1;
+    const toks = tokens.slice(run.ts, run.te + 1);
+    if (toks.some((t) => t.type === "html_block")) {
+      const probe = document.createElement("div");
+      probe.innerHTML = md.renderer.render(toks, md.options, {});
+      n = probe.children.length;
+    }
+    for (let k = 0; k < n && ki < kids.length; k++) kids[ki++].dataset.blk = String(j);
+  }
+}
+
 async function renderDoc(source) {
   const seq = ++renderSeq;
+  if (activeBlockEdit) source = absorbActiveBlock(source); // 重渲染前先合入块内未落定的修改
   currentSource = source;
   const body = stripFrontmatter(source);
 
   const tokens = md.parse(body, {});
-  // 标题 id → 源码行号（加上 frontmatter 占的行数），大纲点击时据此定位编辑框
+  // 顶层块 → 源码绝对行区间（加 frontmatter 占的行数），实时编辑据此定位源码
   const fmLines = (source.slice(0, source.length - body.length).match(/\n/g) || [])
     .length;
-  headingLineById = new Map();
-  for (const t of tokens) {
-    if (t.type === "heading_open" && t.map) {
-      const id = t.attrGet("id");
-      if (id) headingLineById.set(id, fmLines + t.map[0]);
-    }
-  }
+  blockRuns = collectBlockRuns(tokens, fmLines);
   if (currentDir) await rewriteImages(tokens, currentDir);
   if (seq !== renderSeq) return;
 
@@ -652,7 +791,14 @@ async function renderDoc(source) {
   transformCallouts(els.content);
   if (currentDir) await resolveWikiAssets(els.content, currentDir);
   await renderMermaidBlocks();
+  attachBlockIndexes(tokens);
   buildOutline();
+  if (pendingOpenBlockIdx != null) {
+    // 块间跳转：当前块落定重渲染后，接着打开用户点的那块
+    const j = pendingOpenBlockIdx;
+    pendingOpenBlockIdx = null;
+    openBlockEdit(j);
+  }
 }
 
 async function renderMermaidBlocks() {
@@ -707,24 +853,6 @@ function rerender() {
 
 /* ---------------------------------- 大纲 ---------------------------------- */
 
-/** 编辑框滚动到源码某行，光标放到该行行首（方便接着编辑该章节） */
-function scrollEditorToLine(line) {
-  const text = els.editor.value;
-  let pos = 0;
-  for (let i = 0; i < line; i++) {
-    const next = text.indexOf("\n", pos);
-    if (next < 0) {
-      pos = text.length;
-      break;
-    }
-    pos = next + 1;
-  }
-  els.editor.focus();
-  els.editor.setSelectionRange(pos, pos);
-  // 光标滚入视口通常落在视口边缘，再上抬一截让该行上方留出上下文
-  els.editor.scrollTop = Math.max(0, els.editor.scrollTop - els.editor.clientHeight * 0.25);
-}
-
 function buildOutline() {
   const headings = [...els.content.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter(
     (h) => h.id
@@ -736,15 +864,9 @@ function buildOutline() {
     a.className = `lvl-${h.tagName[1]}`;
     a.textContent = h.textContent;
     a.title = h.textContent;
-    const line = headingLineById.get(h.id);
-    if (line != null) a.dataset.srcline = String(line);
     a.addEventListener("click", (e) => {
       e.preventDefault();
       h.scrollIntoView({ behavior: "smooth", block: "start" });
-      // 编辑模式：源码框同步跳到该标题所在行
-      if (editing && a.dataset.srcline != null) {
-        scrollEditorToLine(+a.dataset.srcline);
-      }
     });
     els.outline.appendChild(a);
   }
@@ -782,13 +904,6 @@ async function openFile(path, focusHeading) {
   updateDirtyHint();
   invoke("watch_file", { path }).catch((e) => console.error("watch failed:", e));
   await renderDoc(source);
-  if (editing) {
-    els.editor.value = source;
-    editorDirty = false;
-    updateDirtyHint();
-    els.editor.scrollTop = 0;
-    els.editor.setSelectionRange(0, 0);
-  }
   if (focusHeading) {
     scrollToHeading(focusHeading);
   }
@@ -820,7 +935,11 @@ async function pickFile() {
 
 document.querySelector("#btn-open").addEventListener("click", pickFile);
 
-document.querySelector("#btn-pdf").addEventListener("click", () => window.print());
+document.querySelector("#btn-pdf").addEventListener("click", () => {
+  const p = commitActiveBlock();
+  if (p) p.then(() => window.print());
+  else window.print();
+});
 
 document.querySelector("#btn-edit").addEventListener("click", () => setEditing(!editing));
 
@@ -848,7 +967,9 @@ document.addEventListener("keydown", (e) => {
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
     e.preventDefault();
-    window.print();
+    const p = commitActiveBlock(); // 键盘打印没有 mousedown，块内修改先落定
+    if (p) p.then(() => window.print());
+    else window.print();
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
     e.preventDefault();
@@ -923,8 +1044,7 @@ listen("fs-changed", async (e) => {
     const source = await invoke("read_file", { path: currentPath });
     if (editing && editorDirty) return; // 编辑未保存期间忽略外部变化（用户编辑优先）
     await renderDoc(source);
-    if (editing) els.editor.value = source;
-    else els.previewPane.scrollTop = scrollTop;
+    if (!editing) els.previewPane.scrollTop = scrollTop;
   } catch {
     /* 编辑器保存过程中的瞬时不可读，忽略 */
   }
