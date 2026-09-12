@@ -604,8 +604,8 @@ document.addEventListener(
     if (!activeBlockEdit || !e.target.closest) return;
     if (e.target.closest(".block-editor")) return;
     const blk = e.target.closest("#content > [data-blk]");
-    if (editing && blk) {
-      e.preventDefault(); // 焦点与选区交给接下来的块编辑流程
+    if (editing && blk && !e.target.closest("a")) {
+      e.preventDefault(); // 焦点与选区交给接下来的块编辑流程（链接点击除外——链接走导航）
       pendingOpenBlockIdx = +blk.dataset.blk;
     }
     commitActiveBlock();
@@ -722,47 +722,74 @@ getCurrentWindow().onCloseRequested(async (event) => {
 
 /* --------------------------------- 文档渲染 -------------------------------- */
 
-/** 顶层块的源码行区间。markdown-it 块 token 带 map=[起始行,结束行)，
- *  顶层块从 level 0 的带 map token 开始，到嵌套深度归零结束 */
-function collectBlockRuns(tokens, fmLines) {
+/** 顶层 token 区段（含无 map 的，如脚注区）：{ mapped, html, ts, te } */
+function collectTopRuns(tokens) {
   const runs = [];
-  let start = -1;
-  let end = -1;
   let ts = -1;
   let depth = 0;
   tokens.forEach((t, i) => {
-    if (start < 0) {
-      if (t.level !== 0 || !t.map) return;
-      start = t.map[0];
-      end = t.map[1];
+    if (ts < 0) {
+      if (t.level !== 0) return;
       ts = i;
     }
     depth += t.nesting;
-    if (t.map && t.map[1] > end) end = t.map[1];
-    if (depth === 0) {
-      runs.push({ s: fmLines + start, e: fmLines + end, ts, te: i });
-      start = -1;
-    }
+    if (depth !== 0) return;
+    const toks = tokens.slice(ts, i + 1);
+    runs.push({
+      mapped: !!toks[0].map,
+      html: toks.some((x) => x.type === "html_block"),
+      ts,
+      te: i,
+    });
+    ts = -1;
   });
   return runs;
 }
 
-/** 给 #content 的顶层元素标上块号，实时编辑点击时据此找到源码行区间。
- *  raw HTML 块可能产出 0 或多个元素，逐块探测渲染计数防错位 */
+/** 顶层块的源码行区间（含 frontmatter 偏移），实时编辑据此定位源码 */
+function collectBlockRuns(tokens, fmLines) {
+  const out = [];
+  for (const run of collectTopRuns(tokens)) {
+    if (!run.mapped) continue;
+    let s = null;
+    let e = null;
+    for (let i = run.ts; i <= run.te; i++) {
+      const m = tokens[i].map;
+      if (!m) continue;
+      if (s === null || m[0] < s) s = m[0];
+      if (e === null || m[1] > e) e = m[1];
+    }
+    if (s !== null) out.push({ s: fmLines + s, e: fmLines + e, ts: run.ts, te: run.te });
+  }
+  return out;
+}
+
+/** 给 #content 的顶层元素标块号。含原始 HTML 或无行号区段（脚注等）时用
+ *  与主渲染同配置的消毒探测计数，并与实际元素数对账；对不上就整体不挂
+ *  块号（禁用本轮块编辑）——宁可不可编辑，也不冒"点 A 改 B"的错位风险 */
 function attachBlockIndexes(tokens) {
   const kids = els.content.children;
-  let ki = 0;
-  for (let j = 0; j < blockRuns.length && ki < kids.length; j++) {
-    const run = blockRuns[j];
-    let n = 1;
-    const toks = tokens.slice(run.ts, run.te + 1);
-    if (toks.some((t) => t.type === "html_block")) {
-      const probe = document.createElement("div");
-      probe.innerHTML = md.renderer.render(toks, md.options, {});
-      n = probe.children.length;
-    }
-    for (let k = 0; k < n && ki < kids.length; k++) kids[ki++].dataset.blk = String(j);
+  const top = collectTopRuns(tokens);
+  const counts = top.map(() => 1);
+  if (top.some((r) => r.html || !r.mapped)) {
+    const probe = document.createElement("div");
+    top.forEach((run, r) => {
+      probe.innerHTML = DOMPurify.sanitize(
+        md.renderer.render(tokens.slice(run.ts, run.te + 1), md.options, {}),
+        SANITIZE_CONFIG
+      );
+      counts[r] = probe.children.length;
+    });
   }
+  if (counts.reduce((a, b) => a + b, 0) !== kids.length) return; // 对账失败：安全降级
+  let ki = 0;
+  let mappedIdx = 0;
+  top.forEach((run, r) => {
+    for (let k = 0; k < counts[r]; k++, ki++) {
+      if (run.mapped) kids[ki].dataset.blk = String(mappedIdx);
+    }
+    if (run.mapped) mappedIdx++;
+  });
 }
 
 async function renderDoc(source) {
@@ -889,6 +916,7 @@ function dirname(p) {
 /** 打开文件；focusHeading 可选，渲染后滚动到对应标题 */
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
+  pendingOpenBlockIdx = null; // 跨文档不保留块跳转意图，避免在新文档误开同号块
   if (!(await confirmSaveBefore())) return; // 自动保存失败：留在当前文档
   let source;
   try {
