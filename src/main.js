@@ -322,6 +322,7 @@ async function resolveWikiAssets(container, baseDir) {
         if (!file && heading) {
           // [[#标题]]：同页跳转
           el.setAttribute("href", "#" + heading);
+          el.dataset.wikiheading = heading;
           el.dataset.resolved = "1";
           el.dataset.wikiself = "1";
           return;
@@ -338,6 +339,9 @@ async function resolveWikiAssets(container, baseDir) {
           path = await invoke("find_wiki_target", { baseDir, name: file }).catch(() => null);
         }
         if (path) {
+          // 路径与标题分别存：文件名或标题里的 # 不再影响点击解析
+          el.dataset.wikipath = path;
+          el.dataset.wikiheading = heading;
           el.setAttribute("href", path + (heading ? `#${heading}` : ""));
           el.dataset.resolved = "1";
         } else {
@@ -501,21 +505,25 @@ function setEditing(on) {
   }
 }
 
+/** @returns {Promise<boolean>} 是否保存成功（无待保存修改视为成功） */
 async function saveFile() {
-  if (!editing || !currentPath || !editorDirty) return;
+  if (!editing || !currentPath || !editorDirty) return true;
   try {
     await invoke("write_file", { path: currentPath, content: els.editor.value });
     suppressFsOnce = true;
     editorDirty = false;
     updateDirtyHint();
+    return true;
   } catch (e) {
     alert(`保存失败：${e}`);
+    return false;
   }
 }
 
-/** 切换文档前：有未保存修改则自动保存（Obsidian 默认行为；避免原生对话框在此环境不可用导致的卡死） */
+/** 切换文档前：有未保存修改则自动保存（Obsidian 式）；保存失败返回 false，调用方留在当前文档 */
 async function confirmSaveBefore() {
-  if (editing && editorDirty) await saveFile();
+  if (editing && editorDirty) return saveFile();
+  return true;
 }
 
 els.editor.addEventListener("input", () => {
@@ -598,7 +606,7 @@ getCurrentWindow().onCloseRequested(async (event) => {
     if (!document.querySelector("#modal-overlay").hidden) return; // 已在询问中
     const choice = await showCloseDialog(basename(currentPath));
     if (choice === "cancel") return; // 留在当前页面
-    if (choice === "save") await saveFile();
+    if (choice === "save" && !(await saveFile())) return; // 保存失败不退出，留在页面
     await getCurrentWindow().destroy();
   } catch (err) {
     console.error("close guard failed:", err);
@@ -720,8 +728,15 @@ function dirname(p) {
 /** 打开文件；focusHeading 可选，渲染后滚动到对应标题 */
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
-  await confirmSaveBefore(); // 切换文档前处理未保存修改
-  const source = await invoke("read_file", { path });
+  if (!(await confirmSaveBefore())) return; // 自动保存失败：留在当前文档
+  let source;
+  try {
+    source = await invoke("read_file", { path });
+  } catch (err) {
+    // 三个入口（启动参数/双击关联/Ctrl+O）共用这里，失败必须让用户看见
+    alert(`打开「${basename(path)}」失败：${err}`);
+    return;
+  }
   if (seq !== openSeq) return; // 已有更新的打开请求
   currentPath = path;
   currentDir = dirname(path);
@@ -822,14 +837,11 @@ els.content.addEventListener("click", (e) => {
     if (!a.dataset.resolved) return;
     if (a.dataset.wikiself) {
       // [[#标题]]：页内跳转
-      const href = a.getAttribute("href") || "";
-      scrollToHeading(decodeURIComponent(href.replace(/^#/, "")));
+      scrollToHeading(a.dataset.wikiheading || "");
       return;
     }
-    const href = a.getAttribute("href") || "";
-    const hash = href.indexOf("#");
-    const path = hash >= 0 ? href.slice(0, hash) : href;
-    const heading = hash >= 0 ? decodeURIComponent(href.slice(hash + 1)) : "";
+    const path = a.dataset.wikipath || "";
+    const heading = a.dataset.wikiheading || "";
     if (path) openFile(path, heading).catch(console.error);
     return;
   }
@@ -860,6 +872,7 @@ getCurrentWebview().onDragDropEvent((event) => {
 // 文件保存后自动刷新（保持滚动位置）；编辑模式自写抑制
 listen("fs-changed", async (e) => {
   if (e.payload !== currentPath) return;
+  resolveCache.clear(); // 磁盘内容变了，相对路径的解析结果不再可信，下次渲染重新解析
   if (suppressFsOnce) {
     suppressFsOnce = false;
     return;
