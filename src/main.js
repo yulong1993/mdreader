@@ -626,6 +626,28 @@ els.content.addEventListener("click", (e) => {
   }
 });
 
+// 双击任意块：无需 Ctrl+E，直接进入编辑模式并打开该块
+els.content.addEventListener("dblclick", (e) => {
+  if (e.target.closest("a") || e.target.closest(".block-editor")) return;
+  const blk = e.target.closest("#content > [data-blk]");
+  if (!blk) return;
+  if (!editing) setEditing(true);
+  if (!activeBlockEdit) openBlockEdit(+blk.dataset.blk);
+});
+
+// 点击内容区空白处（不属于任何块/链接/编辑框）：落定修改并退出编辑模式
+els.previewPane.addEventListener("click", (e) => {
+  if (!editing) return;
+  if (
+    e.target.closest("#content > [data-blk]") ||
+    e.target.closest(".block-editor") ||
+    e.target.closest("a")
+  ) {
+    return;
+  }
+  setEditing(false); // setEditing 内部会先落定当前块
+});
+
 /** @returns {Promise<boolean>} 是否保存成功（无待保存修改视为成功） */
 async function saveFile() {
   if (!editing || !currentPath) return true;

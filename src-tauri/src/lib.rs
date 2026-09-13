@@ -177,6 +177,10 @@ pub fn run() {    tauri::Builder::default()
         // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给已运行的实例
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                // show() 不会还原最小化窗口，先显式还原再聚焦
+                if window.is_minimized().unwrap_or(false) {
+                    let _ = window.unminimize();
+                }
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -196,6 +200,33 @@ pub fn run() {    tauri::Builder::default()
             find_wiki_target,
             initial_path
         ])
+        .setup(|app| {
+            // Windows 高 DPI（200%）下创建期窗口尺寸偶发按物理像素写入（只有应有大小的一半，
+            // 非最大化时内容被截断），且偶发以最小化状态创建。创建后轮询自检几秒：
+            // 未最大化且内尺寸与"配置逻辑尺寸 × 当前 scale factor"偏差大则重设，正确即停。
+            if let Some(win) = app.get_webview_window("main") {
+                if win.is_minimized().unwrap_or(false) {
+                    let _ = win.unminimize();
+                }
+                let w = win.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..8 {
+                        std::thread::sleep(Duration::from_millis(400));
+                        let Ok(false) = w.is_maximized() else { break }; // 用户已最大化则不再干预
+                        let Ok(scale) = w.scale_factor() else { break };
+                        let want = tauri::PhysicalSize::new(1100.0 * scale, 760.0 * scale);
+                        let Ok(cur) = w.inner_size() else { break };
+                        if (cur.width as f64 - want.width as f64).abs() < 40.0
+                            && (cur.height as f64 - want.height as f64).abs() < 40.0
+                        {
+                            break; // 尺寸已正确
+                        }
+                        let _ = w.set_size(want);
+                    }
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running mdreader");
 }
