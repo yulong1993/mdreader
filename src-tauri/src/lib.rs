@@ -203,6 +203,90 @@ mod win_geom {
     extern "system" {
         fn GetWindowPlacement(hwnd: isize, placement: *mut Placement) -> i32;
         fn SetWindowPlacement(hwnd: isize, placement: *const Placement) -> i32;
+        fn EnumChildWindows(parent: isize, cb: isize, lparam: isize) -> i32;
+        fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
+        fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+        fn SetWindowPos(
+            hwnd: isize,
+            after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+        fn GetClientRect(hwnd: isize, rect: *mut Rect) -> i32;
+        fn ClientToScreen(hwnd: isize, point: *mut Point) -> i32;
+    }
+
+    /// 客户区 (0,0) 在屏幕坐标中的位置
+    pub fn client_origin(parent: isize) -> Option<(i32, i32)> {
+        unsafe {
+            let mut p = Point { x: 0, y: 0 };
+            if ClientToScreen(parent, &mut p) != 0 {
+                Some((p.x, p.y))
+            } else {
+                None
+            }
+        }
+    }
+
+    /// 枚举 parent 的直接子窗口里 class 名含 chrome 的（WebView2 的 Chromium 渲染窗口），
+    /// 返回 (hwnd, 相对父窗口左上角的 x, y, w, h)
+    pub fn chrome_children(parent: isize) -> Vec<(isize, i32, i32, i32, i32)> {
+        struct Ctx {
+            parent: isize,
+            out: Vec<(isize, i32, i32, i32, i32)>,
+        }
+        unsafe extern "system" fn cb(child: isize, lparam: isize) -> i32 {
+            let ctx = &mut *(lparam as *mut Ctx);
+            let mut buf = [0u16; 64];
+            let n = GetClassNameW(child, buf.as_mut_ptr(), 64);
+            let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            if !class.to_lowercase().contains("chrome") {
+                return 1;
+            }
+            let mut wr = Rect::default();
+            let mut pr = Rect::default();
+            if GetWindowRect(child, &mut wr) == 0 || GetWindowRect(ctx.parent, &mut pr) == 0 {
+                return 1;
+            }
+            ctx.out.push((
+                child,
+                wr.left - pr.left,
+                wr.top - pr.top,
+                wr.right - wr.left,
+                wr.bottom - wr.top,
+            ));
+            1
+        }
+        let mut ctx = Ctx {
+            parent,
+            out: Vec::new(),
+        };
+        unsafe {
+            EnumChildWindows(parent, cb as isize, &mut ctx as *mut Ctx as isize);
+        }
+        ctx.out
+    }
+
+    /// 强制把 child 摆到父窗口客户区 (0,0) 处、大小 w×h
+    pub fn place_child(child: isize, w: i32, h: i32) -> bool {
+        unsafe {
+            // SWP_NOZORDER(4) | SWP_NOACTIVATE(0x10) = 0x14
+            SetWindowPos(child, 0, 0, 0, w, h, 0x14) != 0
+        }
+    }
+
+    pub fn client_size(hwnd: isize) -> Option<(i32, i32)> {
+        unsafe {
+            let mut r = Rect::default();
+            if GetClientRect(hwnd, &mut r) != 0 {
+                Some((r.right - r.left, r.bottom - r.top))
+            } else {
+                None
+            }
+        }
     }
 
     pub fn read(hwnd: isize) -> Option<Placement> {
@@ -341,6 +425,36 @@ pub fn run() {    tauri::Builder::default()
                                             cur.width, cur.height,
                                         )),
                                     });
+                                }
+                            }
+                        }
+                        // 更里层：WebView2 控制器可能报告正常，但其内部 Chromium 渲染子窗口
+                        // 停在旧尺寸（内容画大、窗口裁掉，且 document.title 等更新通道一并失灵）。
+                        // 直接用 Win32 检查子窗口矩形并强制对齐客户区。
+                        if let Some(h) = hwnd {
+                            if let (Some((cw, chh)), Some((cox, coy))) =
+                                (win_geom::client_size(h), win_geom::client_origin(h))
+                            {
+                                // 客户区原点相对窗口矩形原点的偏移（边框+标题栏）
+                                let (cox_rel, coy_rel) = (
+                                    cox - w.outer_position().map(|p| p.x).unwrap_or(cox),
+                                    coy - w.outer_position().map(|p| p.y).unwrap_or(coy),
+                                );
+                                for (child, x, y, w2, h2) in win_geom::chrome_children(h) {
+                                    // 子窗口坐标换算到客户区
+                                    let cx = x - cox_rel;
+                                    let cy = y - coy_rel;
+                                    let dw = (w2 - cw).abs();
+                                    let dh = (h2 - chh).abs();
+                                    if cx.abs() > 10 || cy.abs() > 10 || dw > 10 || dh > 10 {
+                                        log_geom(
+                                            &w,
+                                            &format!(
+                                                "fix-chrome-child rel=({cx},{cy},{w2}x{h2}) client=({cw}x{chh})"
+                                            ),
+                                        );
+                                        let _ = win_geom::place_child(child, cw, chh);
+                                    }
                                 }
                             }
                         }
