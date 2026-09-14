@@ -172,6 +172,90 @@ fn initial_path(state: State<'_, InitialPath>) -> Option<String> {
     state.0.clone()
 }
 
+#[cfg(windows)]
+mod win_geom {
+    // 与 Win32 WINDOWPLACEMENT 布局一致的裸结构（避免引 windows crate 依赖）
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    pub struct Rect {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
+    }
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    pub struct Point {
+        pub x: i32,
+        pub y: i32,
+    }
+    #[repr(C)]
+    pub struct Placement {
+        pub length: u32,
+        pub flags: u32,
+        pub show_cmd: u32,
+        pub pt_min_position: Point,
+        pub pt_max_position: Point,
+        pub rc_normal_position: Rect,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowPlacement(hwnd: isize, placement: *mut Placement) -> i32;
+        fn SetWindowPlacement(hwnd: isize, placement: *const Placement) -> i32;
+    }
+
+    pub fn read(hwnd: isize) -> Option<Placement> {
+        unsafe {
+            let mut p = Placement {
+                length: std::mem::size_of::<Placement>() as u32,
+                ..std::mem::zeroed()
+            };
+            if GetWindowPlacement(hwnd, &mut p) != 0 {
+                Some(p)
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn write(hwnd: isize, p: &Placement) -> bool {
+        unsafe { SetWindowPlacement(hwnd, p) != 0 }
+    }
+}
+
+/// TEMP-DIAG：窗口几何日志（诊断"非全屏打开截断"，问题定位后移除）
+fn log_geom(w: &tauri::WebviewWindow<tauri::Wry>, tag: &str) {
+    use std::io::Write;
+    let scale = w.scale_factor().unwrap_or(0.0);
+    let inner = w.inner_size().map(|s| format!("{}x{}", s.width, s.height)).unwrap_or_default();
+    let rect = w
+        .hwnd()
+        .ok()
+        .and_then(|h| win_geom::read(h.0 as isize))
+        .map(|p| {
+            let r = p.rc_normal_position;
+            format!(" normal=({},{})-({},{}) show={}", r.left, r.top, r.right, r.bottom, p.show_cmd)
+        })
+        .unwrap_or_default();
+    let line = format!(
+        "{:?} tag={} scale={} inner={}{rect} maximized={:?} minimized={:?}\n",
+        std::time::SystemTime::now(),
+        tag,
+        scale,
+        inner,
+        w.is_maximized(),
+        w.is_minimized()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("mdreader-window.log"))
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {    tauri::Builder::default()
         // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给已运行的实例
@@ -201,27 +285,61 @@ pub fn run() {    tauri::Builder::default()
             initial_path
         ])
         .setup(|app| {
-            // Windows 高 DPI（200%）下创建期窗口尺寸偶发按物理像素写入（只有应有大小的一半，
-            // 非最大化时内容被截断），且偶发以最小化状态创建。创建后轮询自检几秒：
-            // 未最大化且内尺寸与"配置逻辑尺寸 × 当前 scale factor"偏差大则重设，正确即停。
+            // Windows 高 DPI（200%）下窗口尺寸偶发被按物理像素写入（只有应有大小的一半，
+            // 非最大化时内容被截断），且偶发以最小化状态创建；冷启动慢时损坏可能晚于
+            // 窗口创建才发生。持续 60s 自检，只修正"恰好等于期望一半"的特征尺寸——
+            // 绝不与用户手动调整的任意尺寸打架。
             if let Some(win) = app.get_webview_window("main") {
                 if win.is_minimized().unwrap_or(false) {
                     let _ = win.unminimize();
                 }
+                log_geom(&win, "startup");
+                let w = win.clone();
+                win.on_window_event(move |e| {
+                    if matches!(e, tauri::WindowEvent::Resized(_)) {
+                        log_geom(&w, "event-resized");
+                    }
+                });
                 let w = win.clone();
                 std::thread::spawn(move || {
-                    for _ in 0..8 {
-                        std::thread::sleep(Duration::from_millis(400));
-                        let Ok(false) = w.is_maximized() else { break }; // 用户已最大化则不再干预
-                        let Ok(scale) = w.scale_factor() else { break };
-                        let want = tauri::PhysicalSize::new(1100.0 * scale, 760.0 * scale);
-                        let Ok(cur) = w.inner_size() else { break };
-                        if (cur.width as f64 - want.width as f64).abs() < 40.0
-                            && (cur.height as f64 - want.height as f64).abs() < 40.0
-                        {
-                            break; // 尺寸已正确
+                    let hwnd = w.hwnd().map(|h| h.0 as isize).ok();
+                    for i in 0..30 {
+                        std::thread::sleep(Duration::from_millis(2000));
+                        if w.is_minimized().unwrap_or(false) {
+                            let _ = w.unminimize();
                         }
-                        let _ = w.set_size(want);
+                        let Ok(scale) = w.scale_factor() else { break };
+                        if scale <= 1.0 {
+                            break; // 100% 缩放不存在“半尺寸”伪影
+                        }
+                        let want_w = 1100.0 * scale;
+                        let want_h = 760.0 * scale;
+                        // 可见尺寸命中签名：≈期望的一半 → 重设
+                        if let Ok(cur) = w.inner_size() {
+                            if (cur.width as f64 - want_w / 2.0).abs() < 60.0
+                                && (cur.height as f64 - want_h / 2.0).abs() < 60.0
+                            {
+                                log_geom(&w, "fix-half-size");
+                                let _ = w.set_size(tauri::PhysicalSize::new(want_w, want_h));
+                            }
+                        }
+                        // 恢复矩形也可能带签名（窗口当前最大化/最小化时可见尺寸改不动）
+                        if let Some(h) = hwnd {
+                            if let Some(mut p) = win_geom::read(h) {
+                                let r = p.rc_normal_position;
+                                if ((r.right - r.left) as f64 - want_w / 2.0).abs() < 60.0
+                                    && ((r.bottom - r.top) as f64 - want_h / 2.0).abs() < 60.0
+                                {
+                                    p.rc_normal_position.right = r.left + want_w as i32;
+                                    p.rc_normal_position.bottom = r.top + want_h as i32;
+                                    log_geom(&w, "fix-restore-rect");
+                                    let _ = win_geom::write(h, &p);
+                                }
+                            }
+                        }
+                        if i == 0 {
+                            log_geom(&w, "probe-1");
+                        }
                     }
                 });
             }
