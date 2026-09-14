@@ -304,15 +304,15 @@ pub fn run() {    tauri::Builder::default()
                 let wv = app.get_webview("main");
                 std::thread::spawn(move || {
                     let hwnd = w.hwnd().map(|h| h.0 as isize).ok();
-                    for i in 0..30 {
+                    let mut n = 0u32;
+                    loop {
+                        // 永久监控：签名制修正不会与用户手动调整冲突
                         std::thread::sleep(Duration::from_millis(2000));
+                        n += 1;
                         if w.is_minimized().unwrap_or(false) {
                             let _ = w.unminimize();
                         }
-                        let Ok(scale) = w.scale_factor() else { break };
-                        if scale <= 1.0 {
-                            break; // 100% 缩放不存在“半尺寸”伪影
-                        }
+                        let Ok(scale) = w.scale_factor() else { continue };
                         let want_w = 1100.0 * scale;
                         let want_h = 760.0 * scale;
                         // 可见尺寸命中签名：≈期望的一半 → 重设
@@ -358,7 +358,7 @@ pub fn run() {    tauri::Builder::default()
                                 }
                             }
                         }
-                        if i == 0 {
+                        if n == 1 {
                             log_geom(&w, "probe-1");
                         }
                     }
