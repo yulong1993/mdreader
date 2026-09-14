@@ -16,6 +16,9 @@
         <button id="btn-outline" class="tb-btn icon" title="显示/隐藏大纲 (Ctrl+\)">☰</button>
         <button id="btn-theme" class="tb-btn icon" title="切换主题：自动 / 浅色 / 深色">◐</button>
       </header>
+      <div id="tabbar" hidden>
+        <div id="tabs" role="tablist" aria-label="打开的文档"></div>
+      </div>
       <div id="main">
         <nav id="outline" aria-label="文档大纲"></nav>
         <div id="content-wrap">
@@ -27,6 +30,7 @@
                 <p>把 Markdown 文件拖进窗口，或按 <kbd>Ctrl</kbd>+<kbd>O</kbd> 打开</p>
                 <ul class="features">
                   <li>GitHub 风格渲染：表格、任务列表、代码高亮、Emoji</li>
+                  <li>多标签页：文件不再互相顶掉，可拖出成新窗口 · 重启恢复</li>
                   <li>数学公式 <code>$...$</code> 与 Mermaid 图表</li>
                   <li>文件保存后自动刷新 · 大纲导航 · 亮 / 暗主题</li>
                   <li>双击任意段落直接编辑（改完点空白处退出），<code>Ctrl+S</code> 保存</li>

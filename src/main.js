@@ -1,7 +1,8 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { full as emoji } from "markdown-it-emoji";
@@ -456,6 +457,316 @@ let mermaidModule = null;
 let renderSeq = 0; // 丢弃过期渲染，避免快速切换文件时旧内容覆盖新内容
 let openSeq = 0;
 
+/* --------------------------------- 标签页 -------------------------------- */
+
+// 多标签：每个窗口持有自己的标签集。currentXxx 全局变量始终是"活跃标签"的活状态，
+// 切换标签时序列化回 tab 对象、再从目标 tab 恢复并重渲染。
+const WIN_LABEL = getCurrentWindow().label; // Tauri 2：label 是属性不是方法
+const tabs = []; // { id, path, source, dirty, scrollY }
+let activeTabId = null;
+let tabIdSeq = 0;
+let dragState = null; // 标签拖拽上下文 { id, startX, startY, started }
+
+function normalizePath(p) {
+  return String(p).replace(/^\\\\\?\\/, "").replace(/\//g, "\\").toLowerCase();
+}
+function samePath(a, b) {
+  return normalizePath(a) === normalizePath(b);
+}
+function sessionKey() {
+  return `mdr-session:${WIN_LABEL}`;
+}
+
+/** 活跃标签的状态（含块编辑框内未落定的修改）序列化回 tab 对象 */
+function snapshotActiveTab() {
+  const t = tabs.find((x) => x.id === activeTabId);
+  if (!t) return;
+  if (activeBlockEdit) currentSource = absorbActiveBlock(currentSource);
+  t.source = currentSource;
+  t.dirty = editorDirty;
+  t.scrollY = els.previewPane.scrollTop;
+}
+
+/** 强制退出编辑态（不弹 UI）：块内容已由调用方 absorb */
+function forceExitEditState() {
+  editing = false;
+  activeBlockEdit = null;
+  pendingOpenBlockIdx = null;
+  document.body.classList.remove("editing");
+  document.querySelector("#btn-edit").textContent = "✏️ 编辑";
+}
+
+async function activateTab(id, focusHeading) {
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return;
+  snapshotActiveTab();
+  activeTabId = t.id;
+  currentPath = t.path;
+  currentDir = dirname(t.path);
+  currentSource = t.source;
+  editorDirty = t.dirty;
+  forceExitEditState();
+  blockRuns = [];
+  els.welcome.hidden = true;
+  els.content.hidden = false;
+  updateDirtyHint();
+  renderTabBar();
+  persistSession();
+  await renderDoc(currentSource);
+  if (focusHeading) scrollToHeading(focusHeading);
+  else els.previewPane.scrollTop = t.scrollY || 0;
+}
+
+/** 直接从载荷建标签（撕出窗口交接 / 拖入合并），不读盘 */
+async function addTabFromPayload({ path, source, dirty }) {
+  const existing = tabs.find((t) => samePath(t.path, path));
+  if (existing) {
+    existing.source = source;
+    existing.dirty = dirty;
+    if (existing.id === activeTabId) {
+      currentSource = source;
+      editorDirty = dirty;
+      updateDirtyHint();
+      await renderDoc(currentSource);
+    }
+    renderTabBar();
+    persistSession();
+    return;
+  }
+  const t = { id: `t${++tabIdSeq}`, path: normalizePath(path), source, dirty: !!dirty, scrollY: 0 };
+  tabs.push(t);
+  await activateTab(t.id);
+  syncWatch();
+}
+
+function resetToWelcome() {
+  activeTabId = null;
+  currentPath = null;
+  currentDir = null;
+  currentSource = null;
+  editorDirty = false;
+  forceExitEditState();
+  blockRuns = [];
+  els.content.hidden = true;
+  els.content.innerHTML = "";
+  els.welcome.hidden = false;
+  els.outline.hidden = true;
+  updateDirtyHint();
+}
+
+/** 保存指定标签（不要求是活跃标签） */
+async function saveTab(t) {
+  try {
+    await invoke("write_file", { path: t.path, content: t.source });
+    suppressFsOnce = true; // 自己保存触发的 fs-changed 不回灌
+    t.dirty = false;
+    if (t.id === activeTabId) {
+      editorDirty = false;
+      updateDirtyHint();
+    }
+    renderTabBar();
+    return true;
+  } catch (e) {
+    alert(`保存失败：${e}`);
+    return false;
+  }
+}
+
+async function closeTab(id) {
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return;
+  if (t.id === activeTabId) snapshotActiveTab();
+  if (t.dirty) {
+    const choice = await showCloseDialog(basename(t.path), "关闭");
+    if (choice === "cancel") return;
+    if (choice === "save" && !(await saveTab(t))) return; // 保存失败留在标签里
+  }
+  removeTabSilently(t);
+}
+
+/** 移除标签且不弹任何确认（拖出/合并路径：内容随载荷带走，不丢数据） */
+function removeTabSilently(t) {
+  const idx = tabs.indexOf(t);
+  if (idx < 0) return;
+  tabs.splice(idx, 1);
+  if (t.id === activeTabId) {
+    const next = tabs[Math.min(idx, tabs.length - 1)];
+    if (next) activateTab(next.id);
+    else resetToWelcome();
+  }
+  renderTabBar();
+  persistSession();
+  syncWatch();
+}
+
+function renderTabBar() {
+  const bar = document.querySelector("#tabbar");
+  const list = document.querySelector("#tabs");
+  bar.hidden = tabs.length === 0;
+  list.replaceChildren(
+    ...tabs.map((t) => {
+      const el = document.createElement("div");
+      el.className = "tab" + (t.id === activeTabId ? " active" : "");
+      el.dataset.id = t.id;
+      el.dataset.path = t.path;
+      el.title = t.path;
+      el.setAttribute("role", "tab");
+      const name = document.createElement("span");
+      name.className = "t-name";
+      name.textContent = basename(t.path);
+      el.append(name);
+      if (t.dirty) {
+        const dot = document.createElement("span");
+        dot.className = "t-dirty";
+        dot.title = "未保存";
+        el.append(dot);
+      }
+      const close = document.createElement("button");
+      close.className = "t-close";
+      close.title = "关闭标签 (Ctrl+W)";
+      close.textContent = "×";
+      el.append(close);
+      return el;
+    })
+  );
+}
+
+/** 文件监听与标签集保持一致 */
+function syncWatch() {
+  invoke("watch_files", { paths: tabs.map((t) => t.path) }).catch((e) =>
+    console.error("watch failed:", e)
+  );
+}
+
+let sessionTimer = null;
+function persistSession() {
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(
+        sessionKey(),
+        JSON.stringify({ paths: tabs.map((t) => t.path), active: currentPath })
+      );
+    } catch {
+      /* 隐私模式等存储不可用，忽略 */
+    }
+  }, 300);
+}
+
+/** 重启后恢复本窗口上次的标签页；读不到的文件跳过 */
+async function restoreSession() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(sessionKey()) || "null");
+  } catch {
+    return;
+  }
+  for (const p of saved?.paths || []) {
+    if (tabs.some((t) => samePath(t.path, p))) continue;
+    try {
+      const source = await invoke("read_file", { path: p });
+      tabs.push({ id: `t${++tabIdSeq}`, path: normalizePath(p), source, dirty: false, scrollY: 0 });
+    } catch {
+      /* 文件已被删除/移动：跳过 */
+    }
+  }
+  if (tabs.length) {
+    const act = tabs.find((t) => samePath(t.path, saved.active)) || tabs[0];
+    await activateTab(act.id);
+    syncWatch();
+  }
+}
+
+/* 标签交互：点击切换、×/中键关闭、按住拖出窗口（撕标签页） */
+document.querySelector("#tabs").addEventListener("click", (e) => {
+  const el = e.target.closest(".tab");
+  if (!el) return;
+  if (e.target.closest(".t-close")) {
+    closeTab(el.dataset.id).catch(console.error);
+    return;
+  }
+  activateTab(el.dataset.id).catch(console.error);
+});
+
+document.querySelector("#tabs").addEventListener("auxclick", (e) => {
+  if (e.button !== 1) return;
+  const el = e.target.closest(".tab");
+  if (el) closeTab(el.dataset.id).catch(console.error);
+});
+
+document.querySelector("#tabs").addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  if (e.target.closest(".t-close")) return;
+  const el = e.target.closest(".tab");
+  if (!el) return;
+  dragState = { id: el.dataset.id, startX: e.clientX, startY: e.clientY, started: false };
+});
+
+window.addEventListener(
+  "pointermove",
+  (e) => {
+    if (!dragState || dragState.started) return;
+    if (Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) > 5) {
+      dragState.started = true; // 交给原生层跟踪（网页拿不到窗口外的鼠标）
+      invoke("drag_tab_begin").catch(() => {});
+    }
+  },
+  true
+);
+window.addEventListener("pointerup", () => {
+  if (dragState && !dragState.started) dragState = null; // 普通点击；已启动的原生拖拽由 tab-drag end 收尾
+});
+
+// 原生拖拽跟踪回报：over = 光标所在的本应用窗口（null = 窗口外）
+listen("tab-drag", (ev) => {
+  const d = ev.payload;
+  if (!dragState?.started) return; // 与本次页面拖拽无关（或已收尾）
+  // 悬停高亮由 Rust 侧直接发给目标窗口；这里只处理收尾
+  if (d.phase !== "end") return;
+  const started = dragState;
+  dragState = null;
+  const t = tabs.find((x) => x.id === started.id);
+  if (!t) return;
+  if (d.over && d.over !== WIN_LABEL) {
+    // 拖入另一窗口：合并过去
+    if (t.id === activeTabId) snapshotActiveTab();
+    emitTo(d.over, "tab-merge", { path: t.path, source: t.source, dirty: t.dirty })
+      .then(() => invoke("focus_window", { label: d.over }))
+      .catch(console.error);
+    removeTabSilently(t);
+  } else if (!d.over) {
+    // 拖到所有窗口之外：撕成新窗口
+    if (t.id === activeTabId) snapshotActiveTab();
+    const label = `w${Date.now().toString(36)}`;
+    try {
+      localStorage.setItem(
+        `mdr-handoff:${label}`,
+        JSON.stringify({ path: t.path, source: t.source, dirty: t.dirty })
+      );
+    } catch {
+      return;
+    }
+    new WebviewWindow(label, {
+      url: "index.html",
+      title: "MD Reader",
+      width: 1100,
+      height: 760,
+      x: Math.max(0, Math.round(d.x / (window.devicePixelRatio || 1)) - 200),
+      y: Math.max(0, Math.round(d.y / (window.devicePixelRatio || 1)) - 40),
+    });
+    removeTabSilently(t);
+  }
+});
+
+// 悬停邀请 / 合并接收
+listen("tab-drop-hover", (ev) => {
+  document.querySelector("#tabbar").classList.toggle("drop-target", !!ev.payload);
+});
+
+listen("tab-merge", (ev) => {
+  addTabFromPayload(ev.payload).catch(console.error);
+});
+
 /* ------------------------- 实时编辑（块级，Obsidian 式） ------------------------- */
 // 渲染视图里点击一个顶层块（段落/标题/列表/表格/代码块…），该块就地变成源码编辑框；
 // 提交后立即渲染回所见即所得形态。块的源码行区间来自 markdown-it 的 token.map。
@@ -491,7 +802,12 @@ function updateDirtyHint() {
   const name = currentPath ? basename(currentPath) : "未打开文件";
   els.fileName.textContent = editorDirty ? `${name} ●未保存` : name;
   els.fileName.title = currentPath || "";
-  document.title = `${editorDirty ? "● " : ""}${currentPath ? basename(currentPath) : "MD Reader"} - MD Reader`;
+  const title = `${editorDirty ? "● " : ""}${
+    currentPath ? basename(currentPath) : "MD Reader"
+  } - MD Reader`;
+  document.title = title;
+  // Tauri 2 下 document.title 不会同步到原生窗口标题
+  getCurrentWindow().setTitle(title).catch(() => {});
 }
 
 function setEditing(on) {
@@ -518,6 +834,7 @@ function absorbActiveBlock(source) {
   else lines.splice(ed.s, ed.e - ed.s, ...val.split("\n"));
   editorDirty = true;
   updateDirtyHint();
+  renderTabBar(); // 标签上的未保存圆点
   return lines.join("\n");
 }
 
@@ -650,42 +967,30 @@ els.previewPane.addEventListener("click", (e) => {
 
 /** @returns {Promise<boolean>} 是否保存成功（无待保存修改视为成功） */
 async function saveFile() {
-  if (!editing || !currentPath) return true;
+  if (!currentPath || !editorDirty) return true;
   if (activeBlockEdit) {
     // 块内正在编辑的内容先合入源码再落盘（renderDoc 顺带清掉编辑框 DOM）
     currentSource = absorbActiveBlock(currentSource);
     renderDoc(currentSource);
   }
-  if (!editorDirty) return true;
-  try {
-    await invoke("write_file", { path: currentPath, content: currentSource });
-    suppressFsOnce = true;
-    editorDirty = false;
-    updateDirtyHint();
-    return true;
-  } catch (e) {
-    alert(`保存失败：${e}`);
-    return false;
-  }
-}
-
-/** 切换文档前：块内未落定的修改先合入，有未保存修改则自动保存（Obsidian 式）；失败返回 false */
-async function confirmSaveBefore() {
-  if (editing && activeBlockEdit) currentSource = absorbActiveBlock(currentSource);
-  if (editing && editorDirty) return saveFile();
-  return true;
+  const t = tabs.find((x) => x.id === activeTabId);
+  if (!t) return true;
+  t.source = currentSource;
+  return saveTab(t);
 }
 
 /**
  * 应用内关闭确认对话框（Office 三按钮式）。不依赖原生对话框——
  * 上版原生 plugin:dialog|ask 在部分环境不返回导致窗口无法关闭。
+ * @param {string} what 内容提示（文件名或数量描述）
+ * @param {string} action 动作词（"关闭"/"退出"）
  * @returns {"save"|"exit"|"cancel"}
  */
-function showCloseDialog(fileName) {
+function showCloseDialog(what, action = "退出") {
   return new Promise((resolve) => {
     const overlay = document.querySelector("#modal-overlay");
     document.querySelector("#dlg-text").textContent =
-      `「${fileName}」有未保存的修改，退出前要保存吗？未保存的修改将被丢弃。`;
+      `${what}有未保存的修改，${action}前要保存吗？未保存的修改将被丢弃。`;
     overlay.hidden = false;
     const saveBtn = document.querySelector("#dlg-save-exit");
 
@@ -721,25 +1026,40 @@ function showCloseDialog(fileName) {
   });
 }
 
-// 关闭窗口：有未保存修改时弹应用内确认；任何异常都放行关闭，绝不卡死窗口
+// 关闭窗口：本窗口任一标签有未保存修改时弹应用内确认；任何异常都放行关闭，绝不卡死窗口
 getCurrentWindow().onCloseRequested(async (event) => {
   try {
-    if (editing && activeBlockEdit) {
+    if (activeBlockEdit) {
       // Alt+F4 等键盘关闭路径没有 mousedown，块内未落定的修改先合入
       currentSource = absorbActiveBlock(currentSource);
       renderDoc(currentSource);
     }
-    if (!(editing && editorDirty)) return; // 无修改 → 正常关闭
+    snapshotActiveTab();
+    const dirtyTabs = tabs.filter((t) => t.dirty);
+    if (!dirtyTabs.length) return; // 无修改 → 正常关闭（会话保留，供下次恢复）
     event.preventDefault();
     if (!document.querySelector("#modal-overlay").hidden) return; // 已在询问中
-    const choice = await showCloseDialog(basename(currentPath));
-    if (choice === "cancel") return; // 留在当前页面
-    if (choice === "save" && !(await saveFile())) return; // 保存失败不退出，留在页面
+    const what =
+      dirtyTabs.length === 1
+        ? `「${basename(dirtyTabs[0].path)}」`
+        : `${dirtyTabs.length} 个标签页`;
+    const choice = await showCloseDialog(what, "退出");
+    if (choice === "cancel") return; // 留在页面
+    if (choice === "save") {
+      for (const t of dirtyTabs) {
+        if (!(await saveTab(t))) return; // 保存失败不退出，留在页面
+      }
+    }
     await getCurrentWindow().destroy();
   } catch (err) {
     console.error("close guard failed:", err);
     await getCurrentWindow().destroy().catch(() => {});
   }
+});
+
+// 本窗口聚焦时登记为"前置窗口"：双击 .md 的新文件开到这里
+getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  if (focused) invoke("set_front_window", { label: WIN_LABEL }).catch(() => {});
 });
 
 /* --------------------------------- 文档渲染 -------------------------------- */
@@ -935,11 +1255,15 @@ function dirname(p) {
   return parts.join("\\") || ".";
 }
 
-/** 打开文件；focusHeading 可选，渲染后滚动到对应标题 */
+/** 打开文件：已有同名标签则激活，否则新建标签（旧标签保留）；focusHeading 渲染后滚动到标题 */
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
   pendingOpenBlockIdx = null; // 跨文档不保留块跳转意图，避免在新文档误开同号块
-  if (!(await confirmSaveBefore())) return; // 自动保存失败：留在当前文档
+  const existing = tabs.find((t) => samePath(t.path, path));
+  if (existing) {
+    await activateTab(existing.id, focusHeading);
+    return;
+  }
   let source;
   try {
     source = await invoke("read_file", { path });
@@ -949,14 +1273,10 @@ async function openFile(path, focusHeading) {
     return;
   }
   if (seq !== openSeq) return; // 已有更新的打开请求
-  currentPath = path;
-  currentDir = dirname(path);
-  updateDirtyHint();
-  invoke("watch_file", { path }).catch((e) => console.error("watch failed:", e));
-  await renderDoc(source);
-  if (focusHeading) {
-    scrollToHeading(focusHeading);
-  }
+  const t = { id: `t${++tabIdSeq}`, path: normalizePath(path), source, dirty: false, scrollY: 0 };
+  tabs.push(t);
+  await activateTab(t.id, focusHeading);
+  syncWatch();
 }
 
 function scrollToHeading(heading) {
@@ -1029,6 +1349,25 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     saveFile();
   }
+  // 标签页快捷键
+  if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
+    e.preventDefault();
+    if (!tabs.length) return;
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const delta = e.shiftKey ? -1 : 1;
+    activateTab(tabs[(idx + delta + tabs.length) % tabs.length].id).catch(console.error);
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") {
+    e.preventDefault();
+    if (activeTabId) closeTab(activeTabId).catch(console.error);
+  }
+  if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
+    const t = tabs[+e.key - 1];
+    if (t) {
+      e.preventDefault();
+      activateTab(t.id).catch(console.error);
+    }
+  }
 });
 
 // 内容区点击：callout 折叠 / wikilink / 锚点 / 外链 / 相对 .md
@@ -1072,31 +1411,46 @@ els.content.addEventListener("click", (e) => {
   }
 });
 
-// 拖拽 .md 到窗口打开（非文本类文件忽略）
+// 拖拽 .md 到窗口打开（非文本类文件忽略）；多个文件全部开成标签
 getCurrentWebview().onDragDropEvent((event) => {
   const p = event.payload;
   if (p.type === "drop" && p.paths?.length) {
-    const file = p.paths.find((x) => /\.(md|markdown|mdown|mkd|txt)$/i.test(x));
-    if (file) openFile(file).catch((err) => alert(`打开失败：${err}`));
+    for (const file of p.paths) {
+      if (/\.(md|markdown|mdown|mkd|txt)$/i.test(file)) {
+        openFile(file).catch((err) => alert(`打开失败：${err}`));
+      }
+    }
   }
 });
 
-// 文件保存后自动刷新（保持滚动位置）；编辑模式自写抑制
+// 文件保存后自动刷新（保持滚动位置）；编辑模式自写抑制。事件按路径路由到对应标签。
 listen("fs-changed", async (e) => {
-  if (e.payload !== currentPath) return;
+  const t = tabs.find((x) => samePath(x.path, e.payload));
+  if (!t) return; // 已关闭的文件或别的窗口的标签
   resolveCache.clear(); // 磁盘内容变了，相对路径的解析结果不再可信，下次渲染重新解析
-  if (suppressFsOnce) {
-    suppressFsOnce = false;
-    return;
-  }
-  const scrollTop = els.previewPane.scrollTop;
-  try {
-    const source = await invoke("read_file", { path: currentPath });
-    if (editing && editorDirty) return; // 编辑未保存期间忽略外部变化（用户编辑优先）
-    await renderDoc(source);
-    if (!editing) els.previewPane.scrollTop = scrollTop;
-  } catch {
-    /* 编辑器保存过程中的瞬时不可读，忽略 */
+  if (t.id === activeTabId) {
+    if (suppressFsOnce) {
+      suppressFsOnce = false;
+      return;
+    }
+    const scrollTop = els.previewPane.scrollTop;
+    try {
+      const source = await invoke("read_file", { path: t.path });
+      if (editing && editorDirty) return; // 编辑未保存期间忽略外部变化（用户编辑优先）
+      t.source = source;
+      currentSource = source;
+      await renderDoc(source);
+      if (!editing) els.previewPane.scrollTop = scrollTop;
+    } catch {
+      /* 编辑器保存过程中的瞬时不可读，忽略 */
+    }
+  } else if (!t.dirty) {
+    // 后台标签静默更新；脏标签不动（用户编辑优先，切回时以源码为准）
+    try {
+      t.source = await invoke("read_file", { path: t.path });
+    } catch {
+      /* 瞬时不可读，忽略 */
+    }
   }
 });
 
@@ -1110,8 +1464,25 @@ listen("open-file", (e) => {
 /* --------------------------------- 启动 --------------------------------- */
 
 applyTheme();
-invoke("initial_path")
-  .then((path) => {
-    if (path) return openFile(path);
-  })
-  .catch(console.error);
+
+// 窗口启动序：撕出窗口的交接载荷 > 会话恢复（可选）> 命令行文件参数（追加为标签）
+(async () => {
+  const handoffKey = `mdr-handoff:${WIN_LABEL}`;
+  const raw = localStorage.getItem(handoffKey);
+  if (raw) {
+    localStorage.removeItem(handoffKey);
+    try {
+      await addTabFromPayload(JSON.parse(raw));
+      return;
+    } catch {
+      /* 载荷坏了走正常启动 */
+    }
+  }
+  await restoreSession();
+  try {
+    const arg = await invoke("initial_path");
+    if (arg) await openFile(arg);
+  } catch (err) {
+    console.error(err);
+  }
+})();

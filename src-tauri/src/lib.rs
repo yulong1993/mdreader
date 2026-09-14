@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, Debouncer, FileIdMap};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 活跃的文件监听器；打开新文件时旧监听器被 drop 即自动停止。
@@ -12,6 +13,9 @@ struct WatcherState(Mutex<Option<Debouncer<notify::RecommendedWatcher, FileIdMap
 
 /// 通过命令行参数传入的待打开文件（如双击 .md / 拖到 exe 上）。
 struct InitialPath(Option<String>);
+
+/// 最近聚焦的窗口标签：再次双击 .md 时文件转发到这里（而不是广播到所有窗口）。
+struct FrontWindow(Mutex<String>);
 
 /// 仅允许读取文本类文档：即使渲染层被攻破，也无法把这里当任意文件读取通道
 const TEXT_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "txt"];
@@ -91,34 +95,152 @@ fn write_file(path: String, content: String) -> Result<(), String> {
     })
 }
 
-/// 监听指定文件，变更（保存）时向前端发送 "fs-changed" 事件。同一时刻只监听当前文件。
+/// 监听当前打开的全部文件（多标签），任一变更时向前端发送 "fs-changed"（载荷为该文件路径）。
+/// 每次调用整体重建监听器，旧监听器被 drop 即自动停止。
 #[tauri::command]
-fn watch_file(
+fn watch_files(
     app: AppHandle,
-    path: String,
+    paths: Vec<String>,
     state: State<'_, WatcherState>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
-    let watched_path = path.clone();
     let mut debouncer = new_debouncer(
         Duration::from_millis(200),
         None,
         move |events: Result<Vec<notify_debouncer_full::DebouncedEvent>, _>| {
             if let Ok(events) = events {
-                if !events.is_empty() {
-                    let _ = app_handle.emit("fs-changed", &watched_path);
+                // 一次保存可能触发多条事件（temp 文件 + rename），按路径去重
+                let mut seen = std::collections::HashSet::new();
+                for ev in events {
+                    for p in &ev.paths {
+                        if seen.insert(p.clone()) {
+                            let _ = app_handle.emit("fs-changed", p.to_string_lossy());
+                        }
+                    }
                 }
             }
         },
     )
     .map_err(|e| e.to_string())?;
 
-    debouncer
-        .watch(Path::new(&path), RecursiveMode::NonRecursive)
-        .map_err(|e| e.to_string())?;
+    for path in &paths {
+        debouncer
+            .watch(Path::new(path), RecursiveMode::NonRecursive)
+            .map_err(|e| format!("监听失败 {path}: {e}"))?;
+    }
 
     *state.0.lock().unwrap() = Some(debouncer);
     Ok(())
+}
+
+#[cfg(windows)]
+mod dragffi {
+    #[repr(C)]
+    pub struct Point {
+        pub x: i32,
+        pub y: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(p: *mut Point) -> i32;
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+    pub fn cursor() -> Option<(i32, i32)> {
+        unsafe {
+            let mut p = Point { x: 0, y: 0 };
+            if GetCursorPos(&mut p) != 0 {
+                Some((p.x, p.y))
+            } else {
+                None
+            }
+        }
+    }
+    pub fn lbutton_down() -> bool {
+        unsafe { (GetAsyncKeyState(0x01) as u16) & 0x8000 != 0 }
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct DragEvent {
+    phase: &'static str, // "move" = 悬停窗口变化，"end" = 左键释放
+    #[serde(skip_serializing_if = "Option::is_none")]
+    over: Option<String>, // 光标当前所在的本应用窗口标签
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<i32>, // end 时的全局物理坐标
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<i32>,
+}
+
+/// 命中测试：全局物理坐标落在哪个应用窗口上（返回窗口标签）
+fn hit_test_window(app: &AppHandle, x: i32, y: i32) -> Option<String> {
+    for (label, w) in app.webview_windows() {
+        if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+            if x >= pos.x
+                && x < pos.x + size.width as i32
+                && y >= pos.y
+                && y < pos.y + size.height as i32
+            {
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
+/// 标签页拖拽跟踪：网页内拿不到窗口外的鼠标事件，由原生层轮询全局光标，
+/// 光标跨越应用窗口边界、或左键在任意位置释放时通知发起窗口的页面。
+#[tauri::command]
+fn drag_tab_begin(app: AppHandle, window: tauri::WebviewWindow) {
+    let origin = window.label().to_string();
+    std::thread::spawn(move || {
+        let mut last_over: Option<String> = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(12));
+            let Some((x, y)) = dragffi::cursor() else { break };
+            if !dragffi::lbutton_down() {
+                let _ = app.emit_to(
+                    &origin,
+                    "tab-drag",
+                    DragEvent { phase: "end", over: last_over.clone(), x: Some(x), y: Some(y) },
+                );
+                break;
+            }
+            let over = hit_test_window(&app, x, y);
+            if over != last_over {
+                // 悬停高亮直接发给目标窗口（页面枚举不到其它窗口标签）
+                if let Some(prev) = &last_over {
+                    if prev != &origin {
+                        let _ = app.emit_to(prev, "tab-drop-hover", false);
+                    }
+                }
+                if let Some(cur) = &over {
+                    if cur != &origin {
+                        let _ = app.emit_to(cur, "tab-drop-hover", true);
+                    }
+                }
+                let _ = app.emit_to(
+                    &origin,
+                    "tab-drag",
+                    DragEvent { phase: "move", over: over.clone(), x: None, y: None },
+                );
+                last_over = over;
+            }
+        }
+    });
+}
+
+/// 记录最近聚焦的窗口（用于双击 .md 时的转发目标）
+#[tauri::command]
+fn set_front_window(label: String, state: State<'_, FrontWindow>) {
+    *state.0.lock().unwrap() = label;
+}
+
+/// 把指定窗口带到前台（标签合并进目标窗口后调用）
+#[tauri::command]
+fn focus_window(app: AppHandle, label: String) {
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+    }
 }
 
 /// 在 base_dir 及其子目录（深度 <= 3，跳过隐藏目录/node_modules/target）中
@@ -174,9 +296,15 @@ fn initial_path(state: State<'_, InitialPath>) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {    tauri::Builder::default()
-        // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给已运行的实例
+        // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给最近聚焦的窗口
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
+            let target = app
+                .state::<FrontWindow>()
+                .0
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| "main".into());
+            if let Some(window) = app.get_webview_window(&target) {
                 // show() 不会还原最小化窗口，先显式还原再聚焦
                 if window.is_minimized().unwrap_or(false) {
                     let _ = window.unminimize();
@@ -185,20 +313,25 @@ pub fn run() {    tauri::Builder::default()
                 let _ = window.set_focus();
             }
             if let Some(path) = argv.iter().nth(1) {
-                let _ = app.emit("open-file", path);
+                // 只发给目标窗口；广播会导致每个窗口都开一个同名标签
+                let _ = app.emit_to(&target, "open-file", path);
             }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState(Mutex::new(None)))
         .manage(InitialPath(std::env::args().nth(1)))
+        .manage(FrontWindow(Mutex::new("main".into())))
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
             resolve_path,
-            watch_file,
+            watch_files,
             find_wiki_target,
-            initial_path
+            initial_path,
+            drag_tab_begin,
+            set_front_window,
+            focus_window
         ])
         .setup(|app| {
             // 窗口偶发以最小化状态创建，显式还原（此前曾误判为双显示器 DPI 问题，
