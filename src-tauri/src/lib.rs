@@ -133,6 +133,53 @@ fn watch_files(
     Ok(())
 }
 
+/// 列出文件夹直接包含的可读文档（不递归），按修改时间倒序。
+/// 供"从文件夹打开"的文件列表使用。
+#[derive(Serialize)]
+struct MdEntry {
+    name: String,
+    path: String,
+    modified: u64, // unix 秒
+}
+
+#[tauri::command]
+fn list_md_files(dir: String) -> Result<Vec<MdEntry>, String> {
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| format!("无法读取文件夹: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            continue;
+        }
+        let ext_ok = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| TEXT_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+            .unwrap_or(false);
+        if !ext_ok {
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        out.push(MdEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
+            modified,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
 #[cfg(windows)]
 mod dragffi {
     #[repr(C)]
@@ -331,7 +378,8 @@ pub fn run() {    tauri::Builder::default()
             initial_path,
             drag_tab_begin,
             set_front_window,
-            focus_window
+            focus_window,
+            list_md_files
         ])
         .setup(|app| {
             // 窗口偶发以最小化状态创建，显式还原（此前曾误判为双显示器 DPI 问题，

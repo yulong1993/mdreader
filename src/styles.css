@@ -114,6 +114,7 @@ body {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  padding: 4px 6px 0;
 }
 #tabs::-webkit-scrollbar {
   display: none;
@@ -122,12 +123,14 @@ body {
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 0 8px 0 12px;
-  font-size: 12.5px;
+  gap: 8px;
+  max-width: 260px;
+  min-height: 32px;
+  padding: 3px 10px 3px 14px;
+  font-size: 13px;
   color: var(--muted);
   border-right: 1px solid var(--border);
+  border-radius: 7px 7px 0 0;
   cursor: default;
   white-space: nowrap;
 }
@@ -138,35 +141,169 @@ body {
 .tab.active {
   color: var(--fg);
   background: var(--bg);
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 3px 0 var(--accent);
 }
 .tab:not(.active):hover {
   background: var(--hover);
 }
 .tab .t-dirty {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent);
   flex: none;
 }
 .tab .t-close {
   flex: none;
-  width: 18px;
-  height: 18px;
-  line-height: 16px;
+  width: 22px;
+  height: 22px;
+  line-height: 20px;
   text-align: center;
   padding: 0;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--muted);
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: 5px;
   cursor: pointer;
 }
 .tab .t-close:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* --------------------------------- 打开菜单 -------------------------------- */
+
+#open-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 260px;
+  max-width: 380px;
+  padding: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 10px 32px rgb(0 0 0 / 0.28);
+  user-select: none;
+}
+.om-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.om-item:hover {
+  background: var(--hover);
+}
+.om-item .om-kbd {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.om-sep {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--border);
+}
+.om-label {
+  padding: 6px 12px 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.om-recent {
+  max-width: 100%;
+}
+.om-recent .om-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.om-recent .om-dir {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+}
+.om-empty {
+  padding: 6px 12px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* --------------------------------- 文件夹列表 ------------------------------- */
+
+#folder-dialog {
+  min-width: 420px;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 20px 22px 16px;
+}
+#folder-dialog h2 {
+  font-size: 15px;
+  margin: 0;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#folder-dialog .fd-path {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#folder-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 4px;
+}
+.fd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fd-item:hover {
+  background: var(--hover);
+}
+.fd-item .fd-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fd-item .fd-time {
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.fd-empty {
+  padding: 18px 10px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
 }
 
 /* --------------------------------- 主区域 --------------------------------- */
@@ -415,7 +552,8 @@ pre.mermaid-error {
 
 /* ------------------------------ 应用内对话框 ------------------------------- */
 
-#modal-overlay {
+#modal-overlay,
+#folder-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -424,7 +562,8 @@ pre.mermaid-error {
   justify-content: center;
   background: rgba(0, 0, 0, 0.45);
 }
-#modal-overlay[hidden] {
+#modal-overlay[hidden],
+#folder-overlay[hidden] {
   display: none;
 }
 

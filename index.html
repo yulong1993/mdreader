@@ -8,7 +8,7 @@
   <body>
     <div id="app">
       <header id="toolbar">
-        <button id="btn-open" class="tb-btn" title="打开文件 (Ctrl+O)">📂 打开</button>
+        <button id="btn-open" class="tb-btn" title="打开文件 / 最近文档 / 从文件夹打开 (Ctrl+O)">📂 打开 ▾</button>
         <span id="file-name" title="">未打开文件</span>
         <span class="tb-spacer"></span>
         <button id="btn-pdf" class="tb-btn" title="导出 PDF / 打印 (Ctrl+P)">🖨 PDF</button>
@@ -53,6 +53,13 @@
           <button id="dlg-exit">直接退出</button>
           <button id="dlg-cancel">取消</button>
         </div>
+      </div>
+    </div>
+    <div id="folder-overlay" hidden>
+      <div id="folder-dialog" role="dialog" aria-modal="true" aria-label="文件夹中的文档">
+        <h2 id="folder-title">选择文档</h2>
+        <div class="fd-path" id="folder-path"></div>
+        <div id="folder-list"></div>
       </div>
     </div>
   </body>

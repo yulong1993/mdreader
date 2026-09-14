@@ -1261,6 +1261,7 @@ async function openFile(path, focusHeading) {
   pendingOpenBlockIdx = null; // 跨文档不保留块跳转意图，避免在新文档误开同号块
   const existing = tabs.find((t) => samePath(t.path, path));
   if (existing) {
+    pushRecent(path);
     await activateTab(existing.id, focusHeading);
     return;
   }
@@ -1273,6 +1274,7 @@ async function openFile(path, focusHeading) {
     return;
   }
   if (seq !== openSeq) return; // 已有更新的打开请求
+  pushRecent(path);
   const t = { id: `t${++tabIdSeq}`, path: normalizePath(path), source, dirty: false, scrollY: 0 };
   tabs.push(t);
   await activateTab(t.id, focusHeading);
@@ -1301,9 +1303,185 @@ async function pickFile() {
   if (path) await openFile(path);
 }
 
+/* ------------------------ 打开菜单 / 最近文档 / 文件夹 ----------------------- */
+
+const openMenuEl = document.createElement("div");
+openMenuEl.id = "open-menu";
+openMenuEl.hidden = true;
+document.body.append(openMenuEl);
+
+const MAX_RECENTS = 5;
+
+function recentList() {
+  try {
+    const v = JSON.parse(localStorage.getItem("mdr-recents") || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+function pushRecent(path) {
+  const norm = normalizePath(path);
+  const list = recentList().filter((p) => normalizePath(p) !== norm);
+  list.unshift(path);
+  try {
+    localStorage.setItem("mdr-recents", JSON.stringify(list.slice(0, MAX_RECENTS)));
+  } catch {
+    /* 存储不可用，忽略 */
+  }
+}
+
+function fmtTime(unixSec) {
+  const d = new Date(unixSec * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  if (d.toDateString() === new Date().toDateString()) return `今天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function buildOpenMenu() {
+  const frag = document.createDocumentFragment();
+  const mk = (cls) => {
+    const el = document.createElement("div");
+    el.className = cls;
+    return el;
+  };
+
+  const itemOpen = mk("om-item");
+  const lbl1 = document.createElement("span");
+  lbl1.textContent = "📄 打开文件…";
+  const kbd = document.createElement("span");
+  kbd.className = "om-kbd";
+  kbd.textContent = "Ctrl+O";
+  itemOpen.append(lbl1, kbd);
+  itemOpen.addEventListener("click", () => {
+    hideOpenMenu();
+    pickFile().catch(console.error);
+  });
+  frag.append(itemOpen);
+
+  const itemFolder = mk("om-item");
+  const lbl2 = document.createElement("span");
+  lbl2.textContent = "📁 从文件夹打开…";
+  itemFolder.append(lbl2);
+  itemFolder.addEventListener("click", () => {
+    hideOpenMenu();
+    pickFolder().catch(console.error);
+  });
+  frag.append(itemFolder);
+
+  frag.append(mk("om-sep"));
+
+  const label = mk("om-label");
+  label.textContent = "最近文档";
+  frag.append(label);
+
+  const recents = recentList();
+  if (!recents.length) {
+    const empty = mk("om-empty");
+    empty.textContent = "暂无记录";
+    frag.append(empty);
+  } else {
+    for (const p of recents) {
+      const it = mk("om-item om-recent");
+      const name = document.createElement("span");
+      name.className = "om-name";
+      name.textContent = "🗎 " + basename(p);
+      const dir = document.createElement("span");
+      dir.className = "om-dir";
+      dir.textContent = dirname(p);
+      it.title = p;
+      it.append(name, dir);
+      it.addEventListener("click", () => {
+        hideOpenMenu();
+        openFile(p).catch(console.error);
+      });
+      frag.append(it);
+    }
+  }
+  openMenuEl.replaceChildren(frag);
+}
+
+function showOpenMenu() {
+  buildOpenMenu();
+  const btn = document.querySelector("#btn-open");
+  const r = btn.getBoundingClientRect();
+  openMenuEl.hidden = false;
+  const mw = openMenuEl.getBoundingClientRect();
+  openMenuEl.style.left = Math.max(6, Math.min(r.left, innerWidth - mw.width - 8)) + "px";
+  openMenuEl.style.top = r.bottom + 6 + "px";
+}
+function hideOpenMenu() {
+  openMenuEl.hidden = true;
+}
+
+async function pickFolder() {
+  const dir = await invoke("plugin:dialog|open", {
+    options: { directory: true, multiple: false, title: "选择包含 Markdown 文档的文件夹" },
+  });
+  if (!dir) return;
+  let entries;
+  try {
+    entries = await invoke("list_md_files", { dir });
+  } catch (e) {
+    alert(`读取文件夹失败：${e}`);
+    return;
+  }
+  showFolderDialog(dir, entries);
+}
+
+function showFolderDialog(dir, entries) {
+  const overlay = document.querySelector("#folder-overlay");
+  document.querySelector("#folder-title").textContent = `选择文档（${entries.length} 个）`;
+  document.querySelector("#folder-path").textContent = dir;
+  const list = document.querySelector("#folder-list");
+  list.replaceChildren(
+    ...entries.map((en) => {
+      const it = document.createElement("div");
+      it.className = "fd-item";
+      const name = document.createElement("span");
+      name.className = "fd-name";
+      name.textContent = en.name;
+      const time = document.createElement("span");
+      time.className = "fd-time";
+      time.textContent = fmtTime(en.modified);
+      it.title = en.path;
+      it.append(name, time);
+      it.addEventListener("click", () => {
+        hideFolderDialog();
+        openFile(en.path).catch(console.error);
+      });
+      return it;
+    })
+  );
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "fd-empty";
+    empty.textContent = "此文件夹没有 Markdown / 文本文档";
+    list.append(empty);
+  }
+  overlay.hidden = false;
+}
+function hideFolderDialog() {
+  document.querySelector("#folder-overlay").hidden = true;
+}
+document.querySelector("#folder-overlay").addEventListener("mousedown", (e) => {
+  if (e.target.id === "folder-overlay") hideFolderDialog();
+});
+
 /* --------------------------------- 事件绑定 -------------------------------- */
 
-document.querySelector("#btn-open").addEventListener("click", pickFile);
+document.querySelector("#btn-open").addEventListener("click", () => {
+  if (openMenuEl.hidden) showOpenMenu();
+  else hideOpenMenu();
+});
+document.addEventListener("mousedown", (e) => {
+  if (!openMenuEl.hidden && !openMenuEl.contains(e.target) && !e.target.closest("#btn-open")) {
+    hideOpenMenu();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !openMenuEl.hidden) hideOpenMenu();
+});
 
 document.querySelector("#btn-pdf").addEventListener("click", () => {
   const p = commitActiveBlock();
