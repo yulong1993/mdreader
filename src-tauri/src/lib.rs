@@ -172,58 +172,6 @@ fn initial_path(state: State<'_, InitialPath>) -> Option<String> {
     state.0.clone()
 }
 
-#[cfg(windows)]
-mod win_geom {
-    // 与 Win32 WINDOWPLACEMENT 布局一致的裸结构（避免引 windows crate 依赖）
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    pub struct Rect {
-        pub left: i32,
-        pub top: i32,
-        pub right: i32,
-        pub bottom: i32,
-    }
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    pub struct Point {
-        pub x: i32,
-        pub y: i32,
-    }
-    #[repr(C)]
-    pub struct Placement {
-        pub length: u32,
-        pub flags: u32,
-        pub show_cmd: u32,
-        pub pt_min_position: Point,
-        pub pt_max_position: Point,
-        pub rc_normal_position: Rect,
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetWindowPlacement(hwnd: isize, placement: *mut Placement) -> i32;
-        fn SetWindowPlacement(hwnd: isize, placement: *const Placement) -> i32;
-    }
-
-    pub fn read(hwnd: isize) -> Option<Placement> {
-        unsafe {
-            let mut p = Placement {
-                length: std::mem::size_of::<Placement>() as u32,
-                ..std::mem::zeroed()
-            };
-            if GetWindowPlacement(hwnd, &mut p) != 0 {
-                Some(p)
-            } else {
-                None
-            }
-        }
-    }
-
-    pub fn write(hwnd: isize, p: &Placement) -> bool {
-        unsafe { SetWindowPlacement(hwnd, p) != 0 }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {    tauri::Builder::default()
         // 必须最先注册：再次启动实例时（如双击 .md），把文件路径转发给已运行的实例
@@ -253,46 +201,23 @@ pub fn run() {    tauri::Builder::default()
             initial_path
         ])
         .setup(|app| {
-            // Windows 高 DPI（200%）下窗口偶发以最小化状态创建、恢复矩形偶发带
-            // "半尺寸"签名。持续自检，只修正特征签名——绝不与用户手动调整冲突。
+            // 双显示器环境（主屏 200%/192DPI + 副屏 150%/144DPI）下，从资源管理器
+            // 双击启动时 shell 可能把窗口放到副屏；WebView2 按主屏 DPI 初始化渲染，
+            // 放到 144DPI 的副屏后内容比例失配（右侧内容被推出窗口外）。
+            // 启动时强制把窗口移到主屏居中，保证 WebView 的 DPI 与所在显示器一致。
             if let Some(win) = app.get_webview_window("main") {
                 if win.is_minimized().unwrap_or(false) {
                     let _ = win.unminimize();
                 }
-                let w = win.clone();
-                std::thread::spawn(move || {
-                    let hwnd = w.hwnd().map(|h| h.0 as isize).ok();
-                    loop {
-                        std::thread::sleep(Duration::from_millis(2000));
-                        if w.is_minimized().unwrap_or(false) {
-                            let _ = w.unminimize();
-                        }
-                        let Ok(scale) = w.scale_factor() else { continue };
-                        let want_w = 1100.0 * scale;
-                        let want_h = 760.0 * scale;
-                        // 可见尺寸命中签名：≈期望的一半 → 重设
-                        if let Ok(cur) = w.inner_size() {
-                            if (cur.width as f64 - want_w / 2.0).abs() < 60.0
-                                && (cur.height as f64 - want_h / 2.0).abs() < 60.0
-                            {
-                                let _ = w.set_size(tauri::PhysicalSize::new(want_w, want_h));
-                            }
-                        }
-                        // 恢复矩形也可能带签名（窗口当前最大化/最小化时可见尺寸改不动）
-                        if let Some(h) = hwnd {
-                            if let Some(mut p) = win_geom::read(h) {
-                                let r = p.rc_normal_position;
-                                if ((r.right - r.left) as f64 - want_w / 2.0).abs() < 60.0
-                                    && ((r.bottom - r.top) as f64 - want_h / 2.0).abs() < 60.0
-                                {
-                                    p.rc_normal_position.right = r.left + want_w as i32;
-                                    p.rc_normal_position.bottom = r.top + want_h as i32;
-                                    let _ = win_geom::write(h, &p);
-                                }
-                            }
-                        }
+                if let Ok(Some(primary)) = win.primary_monitor() {
+                    let size = primary.size();
+                    if let Ok(win_size) = win.outer_size() {
+                        let pos = primary.position();
+                        let x = pos.x + ((size.width as i32 - win_size.width as i32) / 2).max(0);
+                        let y = pos.y + ((size.height as i32 - win_size.height as i32) / 2).max(0);
+                        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
                     }
-                });
+                }
             }
             Ok(())
         })
