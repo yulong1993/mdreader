@@ -431,6 +431,22 @@ pub fn run() {    tauri::Builder::default()
                         if w.is_minimized().unwrap_or(false) {
                             let _ = w.unminimize();
                         }
+                        // 启动后 3~20s 是"页面按外框宽度排版、可视区被裁"的高发窗口，
+                        // 检测手段在该层全部失效（各 API 自报正常），故无条件主动踢几次，
+                        // 强制产生真实 WM_SIZE 促使 Chromium 按真实客户区重排。
+                        if n == 2 || n == 3 || n == 4 || n == 5 || n == 7 || n == 10 {
+                            if !w.is_maximized().unwrap_or(false) {
+                                log_geom(&w, "proactive-kick");
+                                let scale = w.scale_factor().unwrap_or(2.0);
+                                if let Ok(cur) = w.inner_size() {
+                                    let lw = cur.width as f64 / scale;
+                                    let lh = cur.height as f64 / scale;
+                                    let _ = w.set_size(tauri::LogicalSize::new(lw - 1.0, lh));
+                                    std::thread::sleep(Duration::from_millis(120));
+                                    let _ = w.set_size(tauri::LogicalSize::new(lw, lh));
+                                }
+                            }
+                        }
                         let Ok(scale) = w.scale_factor() else { continue };
                         let want_w = 1100.0 * scale;
                         let want_h = 760.0 * scale;

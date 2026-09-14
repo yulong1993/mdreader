@@ -1114,21 +1114,27 @@ listen("open-file", (e) => {
 // 处置：kick_window（±1px 强制产生真实 WM_SIZE，等价于用户手动拖动窗口这个已知有效的动作）。
 let wedgeStrikes = 0;
 let wedgeCheckBusy = false;
+let wedgeChecks = 0;
 setInterval(async () => {
   if (!currentPath || wedgeCheckBusy) return;
   wedgeCheckBusy = true;
   try {
     const win = getCurrentWindow();
-    const [phys, host] = await Promise.all([
-      Promise.resolve({
-        w: Math.round(innerWidth * devicePixelRatio),
-        h: Math.round(innerHeight * devicePixelRatio),
-      }),
-      win.innerSize().catch(() => null),
-    ]);
+    const phys = {
+      w: Math.round(innerWidth * devicePixelRatio),
+      h: Math.round(innerHeight * devicePixelRatio),
+    };
+    const host = await win.innerSize().catch(() => null);
+    wedgeChecks++;
+    // 心跳：每 5 次（约 7.5s）记录一次双方数值，用于验证检测器存活与脱节数值
+    if (wedgeChecks % 5 === 1) {
+      invoke("log_event", {
+        tag: `check page=${phys.w}x${phys.h} host=${host ? `${host.width}x${host.height}` : "null"}`,
+      }).catch(() => {});
+    }
     if (
       host &&
-      (Math.abs(host.width - phys.w) > 12 || Math.abs(host.height - phys.h) > 12)
+      (Math.abs(host.width - phys.w) > 6 || Math.abs(host.height - phys.h) > 6)
     ) {
       wedgeStrikes++;
       console.error(
