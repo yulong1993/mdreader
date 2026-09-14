@@ -39,6 +39,9 @@ body {
 
 #app {
   display: grid;
+  /* 列轨道必须显式 minmax(0,1fr)：默认 auto 轨道会被内容 min-content 撑宽
+     （宽代码块 → 980px 版心 → 工具栏/主区整体超出视口被 #app 裁掉右缘） */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 44px 1fr;
   height: 100vh;
   overflow: hidden;
@@ -148,8 +151,13 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  overflow-x: hidden; /* 兜底：任何超宽元素都不得把页面撑出窗口（内容仍可通过表格/代码块自身的滚动条访问） */
+  overflow-x: auto; /* 可见兜底：真有超宽内容时出现横向滚动条，绝不静默裁切 */
   scroll-behavior: smooth;
+}
+
+/* 代码块横向滚动：宽行在自己的框内滚，不把任何祖先撑宽 */
+.markdown-body pre {
+  overflow-x: auto;
 }
 
 /* --------------------------------- 实时编辑 -------------------------------- */

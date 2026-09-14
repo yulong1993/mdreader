@@ -201,22 +201,11 @@ pub fn run() {    tauri::Builder::default()
             initial_path
         ])
         .setup(|app| {
-            // 双显示器环境（主屏 200%/192DPI + 副屏 150%/144DPI）下，从资源管理器
-            // 双击启动时 shell 可能把窗口放到副屏；WebView2 按主屏 DPI 初始化渲染，
-            // 放到 144DPI 的副屏后内容比例失配（右侧内容被推出窗口外）。
-            // 启动时强制把窗口移到主屏居中，保证 WebView 的 DPI 与所在显示器一致。
+            // 窗口偶发以最小化状态创建，显式还原（此前曾误判为双显示器 DPI 问题，
+            // 实际截断根因是前端 grid 隐式 auto 列轨道被宽内容撑爆，见 styles.css）
             if let Some(win) = app.get_webview_window("main") {
                 if win.is_minimized().unwrap_or(false) {
                     let _ = win.unminimize();
-                }
-                if let Ok(Some(primary)) = win.primary_monitor() {
-                    let size = primary.size();
-                    if let Ok(win_size) = win.outer_size() {
-                        let pos = primary.position();
-                        let x = pos.x + ((size.width as i32 - win_size.width as i32) / 2).max(0);
-                        let y = pos.y + ((size.height as i32 - win_size.height as i32) / 2).max(0);
-                        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-                    }
                 }
             }
             Ok(())
