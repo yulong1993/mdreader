@@ -488,17 +488,39 @@ html[data-theme="dark"] .oc-quote, html[data-theme="dark"] .oc-cite { --oc-color
 
 /* --------------------------------- 滚动条 --------------------------------- */
 
+/* 悬浮式滚动条在宽表格/长代码行溢出时完全隐形，用户无从发现右侧还有内容。
+   这里给出高对比度、常驻可见的滚动条样式（作用于页面所有滚动容器，
+   包括 markdown 表格与代码块自身的横向滚动条）。 */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--muted) 35%, transparent);
-  border-radius: 5px;
+  background: color-mix(in srgb, var(--muted) 80%, transparent);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  background: var(--muted);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+}
+::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* 宽表格治理：长 token（路径/代码/URL）允许在单元格内折行，
+   从源头减少表格超出正文栏宽的情况 */
+.markdown-body td,
+.markdown-body th {
+  overflow-wrap: anywhere;
+}
+.markdown-body td code,
+.markdown-body th code {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }

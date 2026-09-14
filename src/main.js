@@ -1107,63 +1107,9 @@ listen("open-file", (e) => {
   }
 });
 
-/* --------------------- WebView2 通道脱节自愈（截断问题） --------------------- */
-// 症状：页面布局视口卡在旧尺寸（内容按更宽的宽度排版，右侧被窗口裁掉）。
-// 检测：比较页面 innerWidth×devicePixelRatio（Chromium 认为的视口，物理像素）
-// 与宿主窗口 innerSize（真实客户区）——连续 2 次偏差超 12px 即判定脱节。
-// 处置：kick_window（±1px 强制产生真实 WM_SIZE，等价于用户手动拖动窗口这个已知有效的动作）。
-let wedgeStrikes = 0;
-let wedgeCheckBusy = false;
-let wedgeChecks = 0;
-setInterval(async () => {
-  if (!currentPath || wedgeCheckBusy) return;
-  wedgeCheckBusy = true;
-  try {
-    const win = getCurrentWindow();
-    const phys = {
-      w: Math.round(innerWidth * devicePixelRatio),
-      h: Math.round(innerHeight * devicePixelRatio),
-    };
-    const host = await win.innerSize().catch(() => null);
-    wedgeChecks++;
-    // 心跳：每 5 次（约 7.5s）记录一次双方数值，用于验证检测器存活与脱节数值
-    if (wedgeChecks % 5 === 1) {
-      invoke("log_event", {
-        tag: `check page=${phys.w}x${phys.h} host=${host ? `${host.width}x${host.height}` : "null"}`,
-      }).catch(() => {});
-    }
-    if (
-      host &&
-      (Math.abs(host.width - phys.w) > 6 || Math.abs(host.height - phys.h) > 6)
-    ) {
-      wedgeStrikes++;
-      console.error(
-        `viewport wedge #${wedgeStrikes}: page=${phys.w}x${phys.h} host=${host.width}x${host.height}`
-      );
-      if (wedgeStrikes >= 2) {
-        wedgeStrikes = 0;
-        invoke("log_event", {
-          tag: `channel-kick page=${phys.w}x${phys.h} host=${host.width}x${host.height}`,
-        }).catch(() => {});
-        await invoke("kick_window").catch(() => {});
-      }
-    } else {
-      wedgeStrikes = 0;
-    }
-  } finally {
-    wedgeCheckBusy = false;
-  }
-}, 1500);
-
 /* --------------------------------- 启动 ---------------------------------- */
 
 applyTheme();
-// TEMP-DIAG（截断诊断第二轮，修完删除）：标题周期刷新视口几何，捕捉加载后异步变化
-setInterval(() => {
-  if (!currentPath) return;
-  const d = document.documentElement;
-  document.title = `${basename(currentPath)} ·iw=${innerWidth} ih=${innerHeight} dpr=${devicePixelRatio} dw=${d.scrollWidth} dh=${d.scrollHeight}`;
-}, 400);
 invoke("initial_path")
   .then((path) => {
     if (path) return openFile(path);
