@@ -1107,6 +1107,48 @@ listen("open-file", (e) => {
   }
 });
 
+/* --------------------- WebView2 通道脱节自愈（截断问题） --------------------- */
+// 症状：页面布局视口卡在旧尺寸（内容按更宽的宽度排版，右侧被窗口裁掉）。
+// 检测：比较页面 innerWidth×devicePixelRatio（Chromium 认为的视口，物理像素）
+// 与宿主窗口 innerSize（真实客户区）——连续 2 次偏差超 12px 即判定脱节。
+// 处置：kick_window（±1px 强制产生真实 WM_SIZE，等价于用户手动拖动窗口这个已知有效的动作）。
+let wedgeStrikes = 0;
+let wedgeCheckBusy = false;
+setInterval(async () => {
+  if (!currentPath || wedgeCheckBusy) return;
+  wedgeCheckBusy = true;
+  try {
+    const win = getCurrentWindow();
+    const [phys, host] = await Promise.all([
+      Promise.resolve({
+        w: Math.round(innerWidth * devicePixelRatio),
+        h: Math.round(innerHeight * devicePixelRatio),
+      }),
+      win.innerSize().catch(() => null),
+    ]);
+    if (
+      host &&
+      (Math.abs(host.width - phys.w) > 12 || Math.abs(host.height - phys.h) > 12)
+    ) {
+      wedgeStrikes++;
+      console.error(
+        `viewport wedge #${wedgeStrikes}: page=${phys.w}x${phys.h} host=${host.width}x${host.height}`
+      );
+      if (wedgeStrikes >= 2) {
+        wedgeStrikes = 0;
+        invoke("log_event", {
+          tag: `channel-kick page=${phys.w}x${phys.h} host=${host.width}x${host.height}`,
+        }).catch(() => {});
+        await invoke("kick_window").catch(() => {});
+      }
+    } else {
+      wedgeStrikes = 0;
+    }
+  } finally {
+    wedgeCheckBusy = false;
+  }
+}, 1500);
+
 /* --------------------------------- 启动 ---------------------------------- */
 
 applyTheme();

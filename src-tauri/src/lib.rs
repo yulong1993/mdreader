@@ -172,6 +172,39 @@ fn initial_path(state: State<'_, InitialPath>) -> Option<String> {
     state.0.clone()
 }
 
+/// 前端事件写入诊断日志（与窗口几何日志同文件）
+#[tauri::command]
+fn log_event(tag: String) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("mdreader-window.log"))
+    {
+        let _ = writeln!(f, "{:?} tag=fe-{}", std::time::SystemTime::now(), tag);
+    }
+}
+
+/// 通道脱节的自愈：先缩 1px，间隔后再还原，强制产生两轮真实的 WM_SIZE，
+/// 等价于用户手动拖动窗口（已验证可修复该脱节）。
+#[tauri::command]
+fn kick_window(app: AppHandle) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or("主窗口不存在")?
+        .clone();
+    let cur = win.inner_size().map_err(|e| e.to_string())?;
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    let w = cur.width as f64 / scale;
+    let h = cur.height as f64 / scale;
+    std::thread::spawn(move || {
+        let _ = win.set_size(tauri::LogicalSize::new(w - 1.0, h));
+        std::thread::sleep(Duration::from_millis(120));
+        let _ = win.set_size(tauri::LogicalSize::new(w, h));
+    });
+    Ok(())
+}
+
 #[cfg(windows)]
 mod win_geom {
     // 与 Win32 WINDOWPLACEMENT 布局一致的裸结构（避免引 windows crate 依赖）
@@ -366,7 +399,9 @@ pub fn run() {    tauri::Builder::default()
             resolve_path,
             watch_file,
             find_wiki_target,
-            initial_path
+            initial_path,
+            kick_window,
+            log_event
         ])
         .setup(|app| {
             // Windows 高 DPI（200%）下窗口尺寸偶发被按物理像素写入（只有应有大小的一半，
