@@ -155,9 +155,18 @@ body {
   scroll-behavior: smooth;
 }
 
-/* 代码块横向滚动：宽行在自己的框内滚，不把任何祖先撑宽 */
-.markdown-body pre {
+/* 代码块内容折行：阅读器以"读完"为先——评测文档的 ```text 块实际是 agent
+   对话记录，长行靠横向滚动极易漏读右侧。github-markdown-css 用
+   .markdown-body pre>code{white-space:pre} 钉死不折且运行时后注入，
+   必须用 ID 选择器压过（特异性 1,0,2 与注入顺序无关）；与打印样式、
+   Obsidian 阅读视图的折行行为一致 */
+#content pre {
   overflow-x: auto;
+  white-space: pre-wrap;
+}
+#content pre > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* --------------------------------- 实时编辑 -------------------------------- */
