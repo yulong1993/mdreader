@@ -301,6 +301,7 @@ pub fn run() {    tauri::Builder::default()
                     }
                 });
                 let w = win.clone();
+                let wv = app.get_webview("main");
                 std::thread::spawn(move || {
                     let hwnd = w.hwnd().map(|h| h.0 as isize).ok();
                     for i in 0..30 {
@@ -321,6 +322,26 @@ pub fn run() {    tauri::Builder::default()
                             {
                                 log_geom(&w, "fix-half-size");
                                 let _ = w.set_size(tauri::PhysicalSize::new(want_w, want_h));
+                            }
+                        }
+                        // WebView2 覆盖范围偶发与窗口客户区脱节（内容渲染到窗口外被裁），
+                        // 每次自检都比对并强制同步
+                        if let (Some(wv), Ok(cur)) = (wv.as_ref(), w.inner_size()) {
+                            if let Ok(b) = wv.bounds() {
+                                let bs = b.size.to_physical::<u32>(scale);
+                                if bs.width.abs_diff(cur.width) > 10
+                                    || bs.height.abs_diff(cur.height) > 10
+                                {
+                                    log_geom(&w, "fix-webview-bounds");
+                                    let _ = wv.set_bounds(tauri::Rect {
+                                        position: tauri::Position::Physical(
+                                            tauri::PhysicalPosition::new(0, 0),
+                                        ),
+                                        size: tauri::Size::Physical(tauri::PhysicalSize::new(
+                                            cur.width, cur.height,
+                                        )),
+                                    });
+                                }
                             }
                         }
                         // 恢复矩形也可能带签名（窗口当前最大化/最小化时可见尺寸改不动）

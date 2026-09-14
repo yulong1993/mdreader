@@ -1110,6 +1110,12 @@ listen("open-file", (e) => {
 /* --------------------------------- 启动 ---------------------------------- */
 
 applyTheme();
+// TEMP-DIAG（截断诊断第二轮，修完删除）：标题周期刷新视口几何，捕捉加载后异步变化
+setInterval(() => {
+  if (!currentPath) return;
+  const d = document.documentElement;
+  document.title = `${basename(currentPath)} ·iw=${innerWidth} ih=${innerHeight} dpr=${devicePixelRatio} dw=${d.scrollWidth} dh=${d.scrollHeight}`;
+}, 400);
 invoke("initial_path")
   .then((path) => {
     if (path) return openFile(path);
