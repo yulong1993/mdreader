@@ -148,6 +148,7 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden; /* 兜底：任何超宽元素都不得把页面撑出窗口（内容仍可通过表格/代码块自身的滚动条访问） */
   scroll-behavior: smooth;
 }
 
@@ -515,6 +516,9 @@ html[data-theme="dark"] .oc-quote, html[data-theme="dark"] .oc-cite { --oc-color
 
 /* 宽表格治理：长 token（路径/代码/URL）允许在单元格内折行，
    从源头减少表格超出正文栏宽的情况 */
+.markdown-body {
+  overflow-wrap: break-word;
+}
 .markdown-body td,
 .markdown-body th {
   overflow-wrap: anywhere;

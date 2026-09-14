@@ -3,7 +3,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 foreach ($pair in @(
-  ,@("USER-BROKEN", "C:\Users\gongs\.zcode\cli\image-cache\sess_fed24083-551c-4a24-8d8c-c4c8bd28211c\image-999b4cea8a0cfc68f2a931232293e97d.png")
+  ,@("USER-BROKEN", "C:\Users\gongs\.zcode\cli\image-cache\sess_fed24083-551c-4a24-8d8c-c4c8bd28211c\image-b4bfab03902d9f0458f526d630361a74.png")
   ,@("MY-HEALTHY", "$env:TEMP\mdr-window.png")
 )) {
   $label = $pair[0]
