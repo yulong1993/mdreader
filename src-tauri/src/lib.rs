@@ -269,8 +269,10 @@ fn canon_path(path: String) -> Option<String> {
 
 /// 撕出标签成新窗口（原生侧创建）：标签格式校验 + 全局窗口数上限。
 /// 不向前端开放通用的建窗能力（否则被攻破的渲染层可无限拉起 WebView 进程）。
+/// 必须是 async：同步命令在主线程执行，而 build() 会阻塞等待新 WebView 就绪，
+/// 就绪事件又要主线程处理——同步版本必然自锁（新窗口空白、原标签不动、应用无法关闭）。
 #[tauri::command]
-fn tear_off_tab(app: AppHandle, label: String, x: f64, y: f64) -> Result<(), String> {
+async fn tear_off_tab(app: AppHandle, label: String, x: f64, y: f64) -> Result<(), String> {
     let valid = label.len() >= 2
         && label.len() <= 13
         && label.starts_with('w')
