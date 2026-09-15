@@ -490,7 +490,7 @@ function snapshotActiveTab() {
 function forceExitEditState() {
   editing = false;
   activeBlockEdit = null;
-  pendingOpenBlockIdx = null;
+  pendingOpenBlockKey = null;
   document.body.classList.remove("editing");
   document.querySelector("#btn-edit").textContent = "✏️ 编辑";
 }
@@ -505,7 +505,6 @@ async function activateTab(id, focusHeading) {
   currentSource = t.source;
   editorDirty = t.dirty;
   forceExitEditState();
-  blockRuns = [];
   els.welcome.hidden = true;
   els.content.hidden = false;
   updateDirtyHint();
@@ -580,7 +579,6 @@ function resetToWelcome() {
   currentSource = null;
   editorDirty = false;
   forceExitEditState();
-  blockRuns = [];
   els.content.hidden = true;
   els.content.innerHTML = "";
   els.welcome.hidden = false;
@@ -1020,9 +1018,9 @@ listen("tab-merge", (ev) => {
 let editing = false; // 编辑模式开关（Ctrl+E）
 let editorDirty = false; // 自上次保存后是否有修改
 let suppressFsOnce = false; // 自己保存触发的 fs-changed 不再回灌
-let blockRuns = []; // 顶层块列表：{ s, e } 源码绝对行区间（含 frontmatter 偏移），{ ts, te } token 区间
-let activeBlockEdit = null; // 正在编辑的块 { ta, j, s, e, orig, origEl }
-let pendingOpenBlockIdx = null; // 提交当前块后要接着打开的块（块间跳转用）
+let htmlBlockRuns = []; // html_block 的行号登记（原始 HTML 挂不了锚，兜底定位用）
+let activeBlockEdit = null; // 正在编辑的块 { ta, key, s, e, orig, origEl }
+let pendingOpenBlockKey = null; // 提交当前块后要接着打开的块（"s-e" 键，块间跳转用）
 
 /* --------------------------------- 路径解析缓存 -------------------------------- */
 
@@ -1093,16 +1091,17 @@ function commitActiveBlock() {
   if (norm(ed.ta.value) === norm(ed.orig)) {
     ed.ta.replaceWith(ed.origEl);
     activeBlockEdit = null;
-    if (pendingOpenBlockIdx != null) {
-      const j = pendingOpenBlockIdx;
-      pendingOpenBlockIdx = null;
-      openBlockEdit(j);
+    if (pendingOpenBlockKey != null) {
+      const key = pendingOpenBlockKey;
+      pendingOpenBlockKey = null;
+      openBlockEditByKey(key);
     }
     return null;
   }
   currentSource = absorbActiveBlock(currentSource);
   return renderDoc(currentSource).then(() => {
-    els.content.querySelector(`[data-blk="${ed.j}"]`)?.scrollIntoView({ block: "nearest" });
+    // 编辑块的起始行不变（splice 原位替换），按前缀匹配重渲染后的新键
+    els.content.querySelector(`[data-line^="${ed.s}-"]`)?.scrollIntoView({ block: "nearest" });
   });
 }
 
@@ -1118,18 +1117,17 @@ function autoGrow(ta) {
   ta.style.height = `${ta.scrollHeight}px`;
 }
 
-/** 第 j 个顶层块就地变成源码编辑框 */
-function openBlockEdit(j) {
-  const run = blockRuns[j];
-  if (!run) return;
-  const el = els.content.querySelector(`#content > [data-blk="${j}"]`);
-  if (!el) return;
-  const src = currentSource.split("\n").slice(run.s, run.e).join("\n");
+/** 就地编辑一个块：range = { s, e } 源码行区间（e 为 slice 上界），el 为该块的渲染元素 */
+function openBlockEdit(range, el) {
+  if (!range || !el?.isConnected) return;
+  const { s, e } = range;
+  if (!Number.isInteger(s) || !Number.isInteger(e) || e <= s) return;
+  const src = currentSource.split("\n").slice(s, e).join("\n");
   const ta = document.createElement("textarea");
   ta.className = "block-editor";
   ta.spellcheck = false;
   ta.value = src;
-  activeBlockEdit = { ta, j, s: run.s, e: run.e, orig: src, origEl: el };
+  activeBlockEdit = { ta, key: `${s}-${e}`, s, e, orig: src, origEl: el };
   el.replaceWith(ta);
   autoGrow(ta);
   ta.focus();
@@ -1137,6 +1135,56 @@ function openBlockEdit(j) {
   ta.addEventListener("input", () => autoGrow(ta));
   ta.addEventListener("keydown", onBlockKeydown);
   ta.addEventListener("blur", onBlockBlur);
+}
+
+/** 块间跳转：重渲染后按 "s-e" 键找回锚点元素接着打开 */
+function openBlockEditByKey(key) {
+  const el = els.content.querySelector(`[data-line="${key}"]`);
+  if (!el) return;
+  const [s, e] = key.split("-").map(Number);
+  openBlockEdit({ s, e }, el);
+}
+
+/** 原始 HTML 区（如 <details> 折叠块）没有锚，按其内部 markdown 锚的行号
+ *  夹逼整段范围：开标签 = 内部首锚之前最近的 html 块，闭标签 = 内部末锚之后
+ *  最近的 html 块（未闭合则扩到文末）。找不到开标签说明不是被吞并的容器区。 */
+function htmlSectionRange(el) {
+  const anchors = el.querySelectorAll("[data-line]");
+  if (!anchors.length || !htmlBlockRuns.length) return null;
+  let s1 = Infinity;
+  let e1 = 0;
+  for (const a of anchors) {
+    const [s, e] = a.dataset.line.split("-").map(Number);
+    s1 = Math.min(s1, s);
+    e1 = Math.max(e1, e);
+  }
+  let open = null;
+  let close = null;
+  for (const r of htmlBlockRuns) {
+    if (r.e <= s1 && (!open || r.s > open.s)) open = r;
+    if (r.s >= e1 && (!close || r.s < close.s)) close = r;
+  }
+  if (!open) return null;
+  return { s: open.s, e: close ? close.e : currentSource.split("\n").length };
+}
+
+/** 点击目标 → 可编辑块 { el, s, e }：优先 data-line 锚（含被原始 HTML 嵌套的
+ *  块，如 <details> 里的表格——锚跟着元素走，嵌套不丢）；无锚的原始 HTML
+ *  元素退回夹逼法整段编辑 */
+function resolveEditableBlock(target) {
+  const anchored = target.closest?.("[data-line]");
+  if (anchored && els.content.contains(anchored)) {
+    const [s, e] = anchored.dataset.line.split("-").map(Number);
+    if (Number.isInteger(s) && Number.isInteger(e)) return { el: anchored, s, e };
+  }
+  if (!target.closest?.("#content")) return null;
+  let top = target;
+  while (top.parentElement && top.parentElement !== els.content) {
+    top = top.parentElement;
+  }
+  if (!top.parentElement) return null;
+  const r = htmlSectionRange(top);
+  return r ? { el: top, s: r.s, e: r.e } : null;
 }
 
 function onBlockKeydown(e) {
@@ -1166,10 +1214,10 @@ document.addEventListener(
   (e) => {
     if (!activeBlockEdit || !e.target.closest) return;
     if (e.target.closest(".block-editor")) return;
-    const blk = e.target.closest("#content > [data-blk]");
+    const blk = resolveEditableBlock(e.target);
     if (editing && blk && !e.target.closest("a")) {
       e.preventDefault(); // 焦点与选区交给接下来的块编辑流程（链接点击除外——链接走导航）
-      pendingOpenBlockIdx = +blk.dataset.blk;
+      pendingOpenBlockKey = `${blk.s}-${blk.e}`;
     }
     commitActiveBlock();
   },
@@ -1182,30 +1230,26 @@ els.content.addEventListener("click", (e) => {
   if (e.target.closest(".block-editor")) return;
   if (e.target.closest("a")) return;
   if (window.getSelection().toString()) return;
-  const blk = e.target.closest("#content > [data-blk]");
+  const blk = resolveEditableBlock(e.target);
   if (blk) {
     e.stopImmediatePropagation(); // 块编辑优先于折叠等原有交互
-    openBlockEdit(+blk.dataset.blk);
+    openBlockEdit({ s: blk.s, e: blk.e }, blk.el);
   }
 });
 
 // 双击任意块：无需 Ctrl+E，直接进入编辑模式并打开该块
 els.content.addEventListener("dblclick", (e) => {
   if (e.target.closest("a") || e.target.closest(".block-editor")) return;
-  const blk = e.target.closest("#content > [data-blk]");
+  const blk = resolveEditableBlock(e.target);
   if (!blk) return;
   if (!editing) setEditing(true);
-  if (!activeBlockEdit) openBlockEdit(+blk.dataset.blk);
+  if (!activeBlockEdit) openBlockEdit({ s: blk.s, e: blk.e }, blk.el);
 });
 
 // 点击内容区空白处（不属于任何块/链接/编辑框）：落定修改并退出编辑模式
 els.previewPane.addEventListener("click", (e) => {
   if (!editing) return;
-  if (
-    e.target.closest("#content > [data-blk]") ||
-    e.target.closest(".block-editor") ||
-    e.target.closest("a")
-  ) {
+  if (resolveEditableBlock(e.target) || e.target.closest(".block-editor") || e.target.closest("a")) {
     return;
   }
   setEditing(false); // setEditing 内部会先落定当前块
@@ -1310,74 +1354,22 @@ getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 
 /* --------------------------------- 文档渲染 -------------------------------- */
 
-/** 顶层 token 区段（含无 map 的，如脚注区）：{ mapped, html, ts, te } */
-function collectTopRuns(tokens) {
-  const runs = [];
-  let ts = -1;
-  let depth = 0;
-  tokens.forEach((t, i) => {
-    if (ts < 0) {
-      if (t.level !== 0) return;
-      ts = i;
+/** 给顶层块的起始 token 挂 data-line="s-e"（绝对行号，e 为 slice 上界）。
+ *  VS Code 预览 / Markdown Preview Enhanced 同款机制：行号锚跟着元素走，
+ *  浏览器对原始 HTML 的重新嵌套（如未闭合的 <details> 吞并后续 markdown 块）
+ *  不会破坏映射。html_block 是原样透传的字符串、挂不了属性，只登记行号
+ *  （htmlBlockRuns）供 resolveEditableBlock 夹逼兜底。 */
+function annotateSourceLines(tokens, fmLines) {
+  htmlBlockRuns = [];
+  let depth = 0; // 0 = 顶层块边界
+  for (const t of tokens) {
+    if (t.type === "html_block") {
+      if (t.map) htmlBlockRuns.push({ s: fmLines + t.map[0], e: fmLines + t.map[1] });
+    } else if (depth === 0 && t.map && t.type !== "inline") {
+      t.attrSet("data-line", `${fmLines + t.map[0]}-${fmLines + t.map[1]}`);
     }
     depth += t.nesting;
-    if (depth !== 0) return;
-    const toks = tokens.slice(ts, i + 1);
-    runs.push({
-      mapped: !!toks[0].map,
-      html: toks.some((x) => x.type === "html_block"),
-      ts,
-      te: i,
-    });
-    ts = -1;
-  });
-  return runs;
-}
-
-/** 顶层块的源码行区间（含 frontmatter 偏移），实时编辑据此定位源码 */
-function collectBlockRuns(tokens, fmLines) {
-  const out = [];
-  for (const run of collectTopRuns(tokens)) {
-    if (!run.mapped) continue;
-    let s = null;
-    let e = null;
-    for (let i = run.ts; i <= run.te; i++) {
-      const m = tokens[i].map;
-      if (!m) continue;
-      if (s === null || m[0] < s) s = m[0];
-      if (e === null || m[1] > e) e = m[1];
-    }
-    if (s !== null) out.push({ s: fmLines + s, e: fmLines + e, ts: run.ts, te: run.te });
   }
-  return out;
-}
-
-/** 给 #content 的顶层元素标块号。含原始 HTML 或无行号区段（脚注等）时用
- *  与主渲染同配置的消毒探测计数，并与实际元素数对账；对不上就整体不挂
- *  块号（禁用本轮块编辑）——宁可不可编辑，也不冒"点 A 改 B"的错位风险 */
-function attachBlockIndexes(tokens) {
-  const kids = els.content.children;
-  const top = collectTopRuns(tokens);
-  const counts = top.map(() => 1);
-  if (top.some((r) => r.html || !r.mapped)) {
-    const probe = document.createElement("div");
-    top.forEach((run, r) => {
-      probe.innerHTML = DOMPurify.sanitize(
-        md.renderer.render(tokens.slice(run.ts, run.te + 1), md.options, {}),
-        SANITIZE_CONFIG
-      );
-      counts[r] = probe.children.length;
-    });
-  }
-  if (counts.reduce((a, b) => a + b, 0) !== kids.length) return; // 对账失败：安全降级
-  let ki = 0;
-  let mappedIdx = 0;
-  top.forEach((run, r) => {
-    for (let k = 0; k < counts[r]; k++, ki++) {
-      if (run.mapped) kids[ki].dataset.blk = String(mappedIdx);
-    }
-    if (run.mapped) mappedIdx++;
-  });
 }
 
 async function renderDoc(source) {
@@ -1387,10 +1379,10 @@ async function renderDoc(source) {
   const body = stripFrontmatter(source);
 
   const tokens = md.parse(body, {});
-  // 顶层块 → 源码绝对行区间（加 frontmatter 占的行数），实时编辑据此定位源码
+  // 顶层块挂源码行号锚（加 frontmatter 占的行数），实时编辑据此定位源码
   const fmLines = (source.slice(0, source.length - body.length).match(/\n/g) || [])
     .length;
-  blockRuns = collectBlockRuns(tokens, fmLines);
+  annotateSourceLines(tokens, fmLines);
   if (currentDir) await rewriteImages(tokens, currentDir);
   if (seq !== renderSeq) return;
 
@@ -1406,13 +1398,12 @@ async function renderDoc(source) {
   transformCallouts(els.content);
   if (currentDir) await resolveWikiAssets(els.content, currentDir);
   await renderMermaidBlocks();
-  attachBlockIndexes(tokens);
   buildOutline();
-  if (pendingOpenBlockIdx != null) {
+  if (pendingOpenBlockKey != null) {
     // 块间跳转：当前块落定重渲染后，接着打开用户点的那块
-    const j = pendingOpenBlockIdx;
-    pendingOpenBlockIdx = null;
-    openBlockEdit(j);
+    const key = pendingOpenBlockKey;
+    pendingOpenBlockKey = null;
+    openBlockEditByKey(key);
   }
 }
 
@@ -1439,6 +1430,10 @@ async function renderMermaidBlocks() {
       );
       const div = document.createElement("div");
       div.className = "mermaid-figure";
+      // mermaid 替换掉挂锚的代码块，把 data-line 搬到新容器上（块编辑定位用）。
+      // fence 渲染器把 token 属性挂在 <pre> 内层的 <code> 上，两层都查
+      const anchor = code.dataset.line || code.parentElement.dataset.line;
+      if (anchor) div.dataset.line = anchor;
       // mermaid 输出同样过一遍消毒，避免渲染器漏洞成为 XSS 旁路。
       // foreignObject（mermaid 节点文字都放在里面）需三重放行：
       // 1) ADD_TAGS 允许标签本身（默认在 svgDisallowed 名单）
@@ -1504,7 +1499,7 @@ function dirname(p) {
 /** 打开文件：已有同名标签则激活，否则新建标签（旧标签保留）；focusHeading 渲染后滚动到标题 */
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
-  pendingOpenBlockIdx = null; // 跨文档不保留块跳转意图，避免在新文档误开同号块
+  pendingOpenBlockKey = null; // 跨文档不保留块跳转意图，避免在新文档误开同键块
   const idPath = await canonId(path); // 规范身份去重（8.3 短名/大小写/尾点别名）
   const existing = tabs.find((t) => samePath(t.path, idPath));
   if (existing) {
