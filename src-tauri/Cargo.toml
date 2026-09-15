@@ -2,7 +2,7 @@
 name = "mdreader"
 version = "0.1.0"
 description = "A lightweight GitHub-style Markdown reader for Windows"
-authors = ["gongs"]
+authors = ["mdreader"]
 edition = "2021"
 
 [lib]
