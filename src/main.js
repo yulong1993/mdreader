@@ -2,7 +2,6 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { full as emoji } from "markdown-it-emoji";
@@ -517,26 +516,51 @@ async function activateTab(id, focusHeading) {
   else els.previewPane.scrollTop = t.scrollY || 0;
 }
 
-/** 直接从载荷建标签（撕出窗口交接 / 拖入合并），不读盘 */
+/** 文件的规范身份（Rust canonicalize）：消除 8.3 短名/大小写/尾点别名，
+ *  保证同一文件只有一个标签。失败时回退原路径。 */
+async function canonId(path) {
+  try {
+    return (await invoke("canon_path", { path })) || path;
+  } catch {
+    return path;
+  }
+}
+
+/** 直接从载荷建标签（撕出窗口交接 / 拖入合并），不读盘。
+ *  @returns {Promise<boolean>} true=合并成功（源标签可移除）；false=冲突被拒（两边都保留） */
 async function addTabFromPayload({ path, source, dirty }) {
-  const existing = tabs.find((t) => samePath(t.path, path));
+  // 载荷守卫：畸形事件（缺 path / source 非字符串）拒绝处理，防止幽灵标签损坏状态
+  if (typeof path !== "string" || typeof source !== "string") return false;
+  const idPath = await canonId(path);
+  const existing = tabs.find((t) => samePath(t.path, idPath));
   if (existing) {
-    existing.source = source;
-    existing.dirty = dirty;
-    if (existing.id === activeTabId) {
-      currentSource = source;
-      editorDirty = dirty;
-      updateDirtyHint();
-      await renderDoc(currentSource);
+    if (existing.dirty) {
+      if (dirty && existing.source !== source) {
+        // 目标窗口该文件已有未保存修改，且拖入方也带着不同的未保存修改：
+        // 拒绝合并，两边各自保留，由用户决定取舍
+        return false;
+      }
+      // 拖入方是干净版本（=磁盘内容）：以目标未保存的内容为准，正常合并
+    } else {
+      existing.source = source;
+      existing.dirty = !!dirty;
+      if (existing.id === activeTabId) {
+        currentSource = source;
+        editorDirty = existing.dirty;
+        updateDirtyHint();
+        await renderDoc(currentSource);
+      }
     }
+    if (existing.id !== activeTabId) await activateTab(existing.id);
     renderTabBar();
     persistSession();
-    return;
+    return true;
   }
-  const t = { id: `t${++tabIdSeq}`, path: normalizePath(path), source, dirty: !!dirty, scrollY: 0 };
+  const t = { id: `t${++tabIdSeq}`, path: idPath, source, dirty: !!dirty, scrollY: 0 };
   tabs.push(t);
   await activateTab(t.id);
   syncWatch();
+  return true;
 }
 
 function resetToWelcome() {
@@ -662,10 +686,11 @@ async function restoreSession() {
     return;
   }
   for (const p of saved?.paths || []) {
-    if (tabs.some((t) => samePath(t.path, p))) continue;
+    const idPath = await canonId(p); // 用规范身份去重，别名路径不会再开出重复标签
+    if (tabs.some((t) => samePath(t.path, idPath))) continue;
     try {
-      const source = await invoke("read_file", { path: p });
-      tabs.push({ id: `t${++tabIdSeq}`, path: normalizePath(p), source, dirty: false, scrollY: 0 });
+      const source = await invoke("read_file", { path: idPath });
+      tabs.push({ id: `t${++tabIdSeq}`, path: idPath, source, dirty: false, scrollY: 0 });
     } catch {
       /* 文件已被删除/移动：跳过 */
     }
@@ -728,14 +753,32 @@ listen("tab-drag", (ev) => {
   const t = tabs.find((x) => x.id === started.id);
   if (!t) return;
   if (d.over && d.over !== WIN_LABEL) {
-    // 拖入另一窗口：合并过去
+    // 拖入另一窗口：合并过去，等对方确认收到且接受后才移除本地标签
     if (t.id === activeTabId) snapshotActiveTab();
-    emitTo(d.over, "tab-merge", { path: t.path, source: t.source, dirty: t.dirty })
-      .then(() => invoke("focus_window", { label: d.over }))
-      .catch(console.error);
-    removeTabSilently(t);
+    emitTo(d.over, "tab-merge", { path: t.path, source: t.source, dirty: t.dirty, from: WIN_LABEL })
+      .then(async () => {
+        const accepted = await Promise.race([
+          new Promise((res) => {
+            const un = listen("tab-merge-result", (ev) => {
+              if (ev.payload && samePath(ev.payload.path, t.path)) {
+                un.then((f) => f());
+                res(ev.payload.ok);
+              }
+            });
+          }),
+          new Promise((res) => setTimeout(() => res(undefined), 1500)),
+        ]);
+        if (accepted === false) {
+          alert(`「${basename(t.path)}」在目标窗口已有未保存修改，两边都保留了`);
+          return;
+        }
+        if (accepted === undefined) return; // 无回执：保留标签，宁重复不丢失
+        await invoke("focus_window", { label: d.over }).catch(() => {});
+        removeTabSilently(t);
+      })
+      .catch((e) => alert(`合并失败，标签已保留：${e}`));
   } else if (!d.over) {
-    // 拖到所有窗口之外：撕成新窗口
+    // 拖到所有窗口之外：撕成新窗口（原生侧创建，失败保留标签）
     if (t.id === activeTabId) snapshotActiveTab();
     const label = `w${Date.now().toString(36)}`;
     try {
@@ -744,27 +787,35 @@ listen("tab-drag", (ev) => {
         JSON.stringify({ path: t.path, source: t.source, dirty: t.dirty })
       );
     } catch {
+      alert("内容过大，无法拖出为新窗口（本地存储超限），标签已保留");
       return;
     }
-    new WebviewWindow(label, {
-      url: "index.html",
-      title: "MD Reader",
-      width: 1100,
-      height: 760,
-      x: Math.max(0, Math.round(d.x / (window.devicePixelRatio || 1)) - 200),
-      y: Math.max(0, Math.round(d.y / (window.devicePixelRatio || 1)) - 40),
-    });
-    removeTabSilently(t);
+    const scale = window.devicePixelRatio || 1;
+    invoke("tear_off_tab", {
+      label,
+      x: Math.max(0, Math.round(d.x / scale) - 200),
+      y: Math.max(0, Math.round(d.y / scale) - 40),
+    })
+      .then(() => removeTabSilently(t))
+      .catch((e) => {
+        localStorage.removeItem(`mdr-handoff:${label}`);
+        alert(`新窗口创建失败，标签已保留：${e}`);
+      });
   }
 });
 
-// 悬停邀请 / 合并接收
+// 悬停邀请 / 合并接收（接受与否回告源窗口，源窗口据此决定是否移除标签）
 listen("tab-drop-hover", (ev) => {
   document.querySelector("#tabbar").classList.toggle("drop-target", !!ev.payload);
 });
 
 listen("tab-merge", (ev) => {
-  addTabFromPayload(ev.payload).catch(console.error);
+  const h = ev.payload;
+  addTabFromPayload(h)
+    .then((ok) =>
+      h?.from ? emitTo(h.from, "tab-merge-result", { path: h.path, ok: !!ok }) : null
+    )
+    .catch(console.error);
 });
 
 /* ------------------------- 实时编辑（块级，Obsidian 式） ------------------------- */
@@ -1259,23 +1310,24 @@ function dirname(p) {
 async function openFile(path, focusHeading) {
   const seq = ++openSeq;
   pendingOpenBlockIdx = null; // 跨文档不保留块跳转意图，避免在新文档误开同号块
-  const existing = tabs.find((t) => samePath(t.path, path));
+  const idPath = await canonId(path); // 规范身份去重（8.3 短名/大小写/尾点别名）
+  const existing = tabs.find((t) => samePath(t.path, idPath));
   if (existing) {
-    pushRecent(path);
+    pushRecent(idPath);
     await activateTab(existing.id, focusHeading);
     return;
   }
   let source;
   try {
-    source = await invoke("read_file", { path });
+    source = await invoke("read_file", { path: idPath });
   } catch (err) {
     // 三个入口（启动参数/双击关联/Ctrl+O）共用这里，失败必须让用户看见
-    alert(`打开「${basename(path)}」失败：${err}`);
+    alert(`打开「${basename(idPath)}」失败：${err}`);
     return;
   }
   if (seq !== openSeq) return; // 已有更新的打开请求
-  pushRecent(path);
-  const t = { id: `t${++tabIdSeq}`, path: normalizePath(path), source, dirty: false, scrollY: 0 };
+  pushRecent(idPath);
+  const t = { id: `t${++tabIdSeq}`, path: idPath, source, dirty: false, scrollY: 0 };
   tabs.push(t);
   await activateTab(t.id, focusHeading);
   syncWatch();
@@ -1415,8 +1467,10 @@ function hideOpenMenu() {
 }
 
 async function pickFolder() {
-  const dir = await invoke("plugin:dialog|open", {
-    options: { directory: true, multiple: false, title: "选择包含 Markdown 文档的文件夹" },
+  // 对话框在 Rust 侧：选中的目录同时登记为 list_md_files 的一次性许可
+  const dir = await invoke("pick_folder").catch((e) => {
+    alert(`打开文件夹选择器失败：${e}`);
+    return null;
   });
   if (!dir) return;
   let entries;

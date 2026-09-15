@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -7,15 +9,26 @@ use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, Debouncer, FileIdMap};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
-/// 活跃的文件监听器；打开新文件时旧监听器被 drop 即自动停止。
-struct WatcherState(Mutex<Option<Debouncer<notify::RecommendedWatcher, FileIdMap>>>);
+/// 每个窗口一份文件监听器（多窗口时各自维护自己的标签集），窗口同步标签集时整体替换。
+struct WatcherState(
+    Mutex<HashMap<String, Debouncer<notify::RecommendedWatcher, FileIdMap>>>,
+);
 
 /// 通过命令行参数传入的待打开文件（如双击 .md / 拖到 exe 上）。
 struct InitialPath(Option<String>);
 
 /// 最近聚焦的窗口标签：再次双击 .md 时文件转发到这里（而不是广播到所有窗口）。
 struct FrontWindow(Mutex<String>);
+
+/// 「从文件夹打开」最近一次经原生对话框选中的目录（规范化后）。
+/// list_md_files 只接受与它一致的目录且一次有效——渲染层被攻破也无法
+/// 把任意目录枚举当探子用（read_file 白名单仍是内容读取的最终闸门）。
+struct BlessedDir(Mutex<Option<String>>);
+
+/// 标签拖拽跟踪线程重入闸：同一时刻最多一个轮询线程。
+static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 仅允许读取文本类文档：即使渲染层被攻破，也无法把这里当任意文件读取通道
 const TEXT_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "txt"];
@@ -95,25 +108,43 @@ fn write_file(path: String, content: String) -> Result<(), String> {
     })
 }
 
-/// 监听当前打开的全部文件（多标签），任一变更时向前端发送 "fs-changed"（载荷为该文件路径）。
-/// 每次调用整体重建监听器，旧监听器被 drop 即自动停止。
+/// 监听指定窗口当前打开的全部文件（多标签），任一变更时向前端广播 "fs-changed"
+/// （载荷为该文件路径，前端各窗口按自己的标签过滤）。每次调用整体替换该窗口的监听集。
+/// 事件按请求集 + 扩展名白名单双重过滤：监听器不能被当作任意目录的活动监视器。
 #[tauri::command]
 fn watch_files(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     paths: Vec<String>,
     state: State<'_, WatcherState>,
 ) -> Result<(), String> {
+    let label = window.label().to_string();
     let app_handle = app.clone();
+    // 请求集（规范化）先建好再移入闭包：事件只回放集合内的文档
+    let mut watched = std::collections::HashSet::new();
+    for path in &paths {
+        if let Ok(c) = Path::new(path).canonicalize() {
+            watched.insert(c);
+        }
+    }
     let mut debouncer = new_debouncer(
         Duration::from_millis(200),
         None,
         move |events: Result<Vec<notify_debouncer_full::DebouncedEvent>, _>| {
             if let Ok(events) = events {
-                // 一次保存可能触发多条事件（temp 文件 + rename），按路径去重
                 let mut seen = std::collections::HashSet::new();
                 for ev in events {
                     for p in &ev.paths {
-                        if seen.insert(p.clone()) {
+                        let ext_ok = p
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| TEXT_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+                            .unwrap_or(false);
+                        if !ext_ok {
+                            continue;
+                        }
+                        let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+                        if watched.contains(&canon) && seen.insert(canon) {
                             let _ = app_handle.emit("fs-changed", p.to_string_lossy());
                         }
                     }
@@ -129,12 +160,13 @@ fn watch_files(
             .map_err(|e| format!("监听失败 {path}: {e}"))?;
     }
 
-    *state.0.lock().unwrap() = Some(debouncer);
+    state.0.lock().unwrap().insert(label, debouncer);
     Ok(())
 }
 
-/// 列出文件夹直接包含的可读文档（不递归），按修改时间倒序。
-/// 供"从文件夹打开"的文件列表使用。
+/// 列出文件夹直接包含的可读文档（不递归），按修改时间倒序，上限 2000 条。
+/// 仅接受最近一次原生对话框选中的目录（一次性），且只返回文档文件名——
+/// 不给渲染层一个任意目录的枚举探子。
 #[derive(Serialize)]
 struct MdEntry {
     name: String,
@@ -142,8 +174,24 @@ struct MdEntry {
     modified: u64, // unix 秒
 }
 
+const MAX_DIR_ENTRIES: usize = 2000;
+
 #[tauri::command]
-fn list_md_files(dir: String) -> Result<Vec<MdEntry>, String> {
+fn list_md_files(
+    dir: String,
+    state: State<'_, BlessedDir>,
+) -> Result<Vec<MdEntry>, String> {
+    let input = Path::new(&dir)
+        .canonicalize()
+        .map_err(|_| "目录不可用".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    let mut blessed = state.0.lock().unwrap();
+    let ok = blessed.as_deref() == Some(input.as_str());
+    *blessed = None; // 一次性：枚举许可随使用即焚
+    if !ok {
+        return Err("请通过「从文件夹打开」选择文件夹".into());
+    }
     let mut out = Vec::new();
     let entries = fs::read_dir(&dir).map_err(|e| format!("无法读取文件夹: {e}"))?;
     for entry in entries.flatten() {
@@ -171,6 +219,9 @@ fn list_md_files(dir: String) -> Result<Vec<MdEntry>, String> {
             path: path.to_string_lossy().into_owned(),
             modified,
         });
+        if out.len() >= MAX_DIR_ENTRIES {
+            break;
+        }
     }
     out.sort_by(|a, b| {
         b.modified
@@ -178,6 +229,71 @@ fn list_md_files(dir: String) -> Result<Vec<MdEntry>, String> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(out)
+}
+
+/// 原生文件夹选择对话框（Rust 侧）：结果同时登记为"祝福目录"，供 list_md_files 一次性使用。
+#[tauri::command]
+async fn pick_folder(app: AppHandle, state: State<'_, BlessedDir>) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .pick_folder(move |fp| {
+            let picked = fp
+                .and_then(|p| p.into_path().ok())
+                .map(|pb| pb.to_string_lossy().into_owned());
+            let _ = tx.send(picked);
+        });
+    let picked = rx.recv().map_err(|e| format!("对话框异常: {e}"))?;
+    if let Some(ref dir) = picked {
+        let canon = Path::new(dir)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok();
+        *state.0.lock().unwrap() = canon.or(Some(dir.clone()));
+    }
+    Ok(picked)
+}
+
+/// 路径规范化（canonicalize + 去 \\?\ 前缀）：作为标签身份，消除 8.3 短名、
+/// 大小写、尾点等别名造成的"同一文件两个标签"（互相覆盖保存）问题。
+#[tauri::command]
+fn canon_path(path: String) -> Option<String> {
+    Path::new(&path)
+        .canonicalize()
+        .ok()
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+        })
+}
+
+/// 撕出标签成新窗口（原生侧创建）：标签格式校验 + 全局窗口数上限。
+/// 不向前端开放通用的建窗能力（否则被攻破的渲染层可无限拉起 WebView 进程）。
+#[tauri::command]
+fn tear_off_tab(app: AppHandle, label: String, x: f64, y: f64) -> Result<(), String> {
+    let valid = label.len() >= 2
+        && label.len() <= 13
+        && label.starts_with('w')
+        && label[1..]
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !valid {
+        return Err("非法窗口标签".into());
+    }
+    if app.get_webview_window(&label).is_some() {
+        return Err("窗口已存在".into());
+    }
+    if app.webview_windows().len() >= 12 {
+        return Err("打开的窗口过多".into());
+    }
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
+        .title("MD Reader")
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(640.0, 400.0)
+        .position(x, y)
+        .build()
+        .map_err(|e| format!("创建窗口失败: {e}"))?;
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -238,6 +354,9 @@ fn hit_test_window(app: &AppHandle, x: i32, y: i32) -> Option<String> {
 /// 光标跨越应用窗口边界、或左键在任意位置释放时通知发起窗口的页面。
 #[tauri::command]
 fn drag_tab_begin(app: AppHandle, window: tauri::WebviewWindow) {
+    if DRAG_ACTIVE.swap(true, Ordering::SeqCst) {
+        return; // 已有跟踪线程在跑
+    }
     let origin = window.label().to_string();
     std::thread::spawn(move || {
         let mut last_over: Option<String> = None;
@@ -273,6 +392,8 @@ fn drag_tab_begin(app: AppHandle, window: tauri::WebviewWindow) {
                 last_over = over;
             }
         }
+        // 所有退出路径（左键释放 / 光标读取失败）统一复位重入闸
+        DRAG_ACTIVE.store(false, Ordering::SeqCst);
     });
 }
 
@@ -366,9 +487,10 @@ pub fn run() {    tauri::Builder::default()
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(WatcherState(Mutex::new(None)))
+        .manage(WatcherState(Mutex::new(HashMap::new())))
         .manage(InitialPath(std::env::args().nth(1)))
         .manage(FrontWindow(Mutex::new("main".into())))
+        .manage(BlessedDir(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -379,7 +501,10 @@ pub fn run() {    tauri::Builder::default()
             drag_tab_begin,
             set_front_window,
             focus_window,
-            list_md_files
+            list_md_files,
+            pick_folder,
+            canon_path,
+            tear_off_tab
         ])
         .setup(|app| {
             // 窗口偶发以最小化状态创建，显式还原（此前曾误判为双显示器 DPI 问题，
