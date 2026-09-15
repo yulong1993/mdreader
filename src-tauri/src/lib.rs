@@ -285,7 +285,7 @@ async fn tear_off_tab(app: AppHandle, label: String, x: f64, y: f64) -> Result<(
     if app.get_webview_window(&label).is_some() {
         return Err("窗口已存在".into());
     }
-    if app.webview_windows().len() >= 12 {
+    if app.webview_windows().iter().filter(|(l, _)| *l != GHOST_LABEL).count() >= 12 {
         return Err("打开的窗口过多".into());
     }
     tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
@@ -309,6 +309,7 @@ mod dragffi {
     extern "system" {
         fn GetCursorPos(p: *mut Point) -> i32;
         fn GetAsyncKeyState(key: i32) -> i16;
+        fn GetWindow(hwnd: isize, cmd: u32) -> isize;
     }
     pub fn cursor() -> Option<(i32, i32)> {
         unsafe {
@@ -323,79 +324,320 @@ mod dragffi {
     pub fn lbutton_down() -> bool {
         unsafe { (GetAsyncKeyState(0x01) as u16) & 0x8000 != 0 }
     }
+    /// a 是否在 b 的上层（沿顶层 Z 序链向上走，遇到 b 即 a 在上）。
+    /// 撕出的窗口常与原窗口重叠，命中测试必须取最上层那个。
+    pub fn above(a: isize, b: isize) -> bool {
+        if a == 0 || b == 0 {
+            return false;
+        }
+        let mut h = a;
+        while h != 0 {
+            if h == b {
+                return true;
+            }
+            h = unsafe { GetWindow(h, 3 /* GW_HWNDPREV */) };
+        }
+        false
+    }
 }
+
+/// 拖拽跟手小窗（ghost）的窗口标签：固定名，建一次全程复用（隐藏而非销毁）
+const GHOST_LABEL: &str = "ghost";
+/// 拖起后仍算"在标签栏带内"的客户区高度（CSS 像素）：工具栏 44 + 标签行 ~40，留裕量
+const TABBAR_BAND_CSS: f64 = 96.0;
 
 #[derive(Serialize, Clone)]
 struct DragEvent {
-    phase: &'static str, // "move" = 悬停窗口变化，"end" = 左键释放
+    phase: &'static str, // "move" | "end"
     #[serde(skip_serializing_if = "Option::is_none")]
-    over: Option<String>, // 光标当前所在的本应用窗口标签
+    over: Option<String>, // 光标所在的本应用窗口（None = 窗外）
     #[serde(skip_serializing_if = "Option::is_none")]
     x: Option<i32>, // end 时的全局物理坐标
     #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lx: Option<f64>, // 发起窗口客户区坐标（CSS 像素）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ly: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detached: Option<bool>, // 已拖离标签栏带（true = 标签应从栏上摘除）
 }
 
-/// 命中测试：全局物理坐标落在哪个应用窗口上（返回窗口标签）
+/// 发给悬停目标窗口的插入指示：over=false 表示拖拽结束/离开，清除插入缝
+#[derive(Serialize, Clone)]
+struct HoverEvent {
+    over: bool,
+    lx: f64, // 目标窗口客户区坐标（CSS 像素）
+    ly: f64,
+    w: f64, // 被拖标签的宽度（缝宽与之一致）
+}
+
+/// ghost 小窗的显示状态（增量更新；ghost_current 供页面就绪后一次性拉取）
+#[derive(Serialize, Clone, Default)]
+struct GhostState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<&'static str>, // "default" | "no-drop"
+}
+struct GhostInfo(Mutex<GhostState>);
+
+fn ghost_emit(app: &AppHandle, patch: GhostState) {
+    if let Ok(mut g) = app.state::<GhostInfo>().0.lock() {
+        if patch.title.is_some() {
+            g.title = patch.title.clone();
+        }
+        if patch.w.is_some() {
+            g.w = patch.w;
+        }
+        if patch.cursor.is_some() {
+            g.cursor = patch.cursor;
+        }
+        let _ = app.emit_to(GHOST_LABEL, "ghost-state", &*g);
+    }
+}
+
+/// 命中测试：全局物理坐标落在哪个应用窗口上；重叠时取 Z 序最上层（ghost 永远不算）
 fn hit_test_window(app: &AppHandle, x: i32, y: i32) -> Option<String> {
+    let mut best: Option<(String, isize)> = None;
     for (label, w) in app.webview_windows() {
-        if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
-            if x >= pos.x
-                && x < pos.x + size.width as i32
-                && y >= pos.y
-                && y < pos.y + size.height as i32
-            {
-                return Some(label);
+        if label == GHOST_LABEL {
+            continue;
+        }
+        let Ok(pos) = w.outer_position() else { continue };
+        let Ok(size) = w.outer_size() else { continue };
+        if x < pos.x || x >= pos.x + size.width as i32 || y < pos.y || y >= pos.y + size.height as i32
+        {
+            continue;
+        }
+        #[cfg(windows)]
+        let hwnd = w.hwnd().ok().map(|h| h.0 as isize);
+        #[cfg(not(windows))]
+        let hwnd = None;
+        match (&best, hwnd) {
+            (None, _) => best = Some((label, hwnd.unwrap_or(0))),
+            // 后命中且在更上层 → 换人；拿不到句柄的保守不比
+            (Some((_, bh)), Some(h)) => {
+                if *bh == 0 || dragffi::above(h, *bh) {
+                    best = Some((label, h));
+                }
             }
+            (Some(_), None) => {}
         }
     }
-    None
+    best.map(|(l, _)| l)
 }
 
-/// 标签页拖拽跟踪：网页内拿不到窗口外的鼠标事件，由原生层轮询全局光标，
-/// 光标跨越应用窗口边界、或左键在任意位置释放时通知发起窗口的页面。
+/// 全局物理坐标 → 窗口客户区 CSS 坐标（窗口已关等失败返回 None）
+fn local_logical(win: &tauri::WebviewWindow, x: i32, y: i32) -> Option<(f64, f64)> {
+    let pos = win.inner_position().ok()?;
+    let scale = win.scale_factor().unwrap_or(1.0);
+    if scale <= 0.0 {
+        return None;
+    }
+    Some((
+        (x - pos.x) as f64 / scale,
+        (y - pos.y) as f64 / scale,
+    ))
+}
+
+/// 拖拽收尾（左键释放）：最后一帧几何信息 + 目标窗口插入缝清除 + ghost 隐藏
+fn drag_end(
+    app: &AppHandle,
+    origin: &str,
+    x: i32,
+    y: i32,
+    last_over: Option<String>,
+    ghost_shown: bool,
+    w: f64,
+) {
+    let own = last_over.as_deref() == Some(origin);
+    let (lx, ly) = app
+        .get_webview_window(origin)
+        .and_then(|win| local_logical(&win, x, y))
+        .unwrap_or((f64::MAX, f64::MAX));
+    let detached = !(own && ly >= 0.0 && lx >= 0.0 && ly <= TABBAR_BAND_CSS);
+    let _ = app.emit_to(
+        origin,
+        "tab-drag",
+        DragEvent {
+            phase: "end",
+            over: last_over.clone(),
+            x: Some(x),
+            y: Some(y),
+            lx: Some(lx),
+            ly: Some(ly),
+            detached: Some(detached),
+        },
+    );
+    // 目标窗口的插入缝由 end 收尾清除
+    if let Some(prev) = &last_over {
+        if prev != origin {
+            let _ = app.emit_to(
+                prev,
+                "tab-drop-hover",
+                HoverEvent { over: false, lx: 0.0, ly: 0.0, w },
+            );
+        }
+    }
+    if ghost_shown {
+        if let Some(g) = app.get_webview_window(GHOST_LABEL) {
+            let _ = g.hide();
+        }
+    }
+    DRAG_ACTIVE.store(false, Ordering::SeqCst);
+}
+
+/// 标签页拖拽跟踪：网页内拿不到窗口外的鼠标事件，由原生层轮询全局光标。
+/// 拖离标签栏带（detached）时驱动一个无边框透明置顶的 ghost 小窗贴着光标走；
+/// 悬停其它窗口时把该窗口的客户区坐标持续喂给它（插入缝定位）。
 #[tauri::command]
-fn drag_tab_begin(app: AppHandle, window: tauri::WebviewWindow) {
+fn drag_tab_begin(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    title: Option<String>,
+    width: Option<f64>,
+) {
     if DRAG_ACTIVE.swap(true, Ordering::SeqCst) {
         return; // 已有跟踪线程在跑
     }
     let origin = window.label().to_string();
+    let title = title.unwrap_or_else(|| "…".into());
+    let width = width.unwrap_or(150.0).clamp(48.0, 260.0);
     std::thread::spawn(move || {
         let mut last_over: Option<String> = None;
+        let mut last_detached: Option<bool> = None;
+        let mut ghost_spawned = false;
+        let mut ghost_shown = false;
+        let mut ghost_cursor: Option<&'static str> = None;
         loop {
             std::thread::sleep(Duration::from_millis(12));
             let Some((x, y)) = dragffi::cursor() else { break };
             if !dragffi::lbutton_down() {
-                let _ = app.emit_to(
-                    &origin,
-                    "tab-drag",
-                    DragEvent { phase: "end", over: last_over.clone(), x: Some(x), y: Some(y) },
-                );
+                drag_end(&app, &origin, x, y, last_over, ghost_shown, width);
                 break;
             }
             let over = hit_test_window(&app, x, y);
+            let own = over.as_deref() == Some(origin.as_str());
+            let (lx, ly) = app
+                .get_webview_window(&origin)
+                .and_then(|w| local_logical(&w, x, y))
+                .unwrap_or((f64::MAX, f64::MAX));
+            let detached = !(own && ly >= 0.0 && lx >= 0.0 && ly <= TABBAR_BAND_CSS);
+
+            if detached {
+                if !ghost_spawned {
+                    ghost_spawned = true;
+                    ensure_ghost(&app, title.clone(), width);
+                }
+                if let Some(g) = app.get_webview_window(GHOST_LABEL) {
+                    let _ = g.set_position(tauri::PhysicalPosition::new(x + 12, (y - 36).max(0)));
+                    if !ghost_shown {
+                        ghost_shown = true;
+                        let _ = g.show();
+                    }
+                }
+                // 悬停自己窗口的内容区/标题栏 = 此处不能放（图2 的 🚫）
+                let cur: &'static str = if own { "no-drop" } else { "default" };
+                if ghost_cursor != Some(cur) {
+                    ghost_cursor = Some(cur);
+                    ghost_emit(&app, GhostState { title: None, w: None, cursor: Some(cur) });
+                }
+            } else if ghost_shown {
+                ghost_shown = false;
+                if let Some(g) = app.get_webview_window(GHOST_LABEL) {
+                    let _ = g.hide();
+                }
+            }
+
             if over != last_over {
-                // 悬停高亮直接发给目标窗口（页面枚举不到其它窗口标签）
                 if let Some(prev) = &last_over {
                     if prev != &origin {
-                        let _ = app.emit_to(prev, "tab-drop-hover", false);
+                        let _ = app.emit_to(
+                            prev,
+                            "tab-drop-hover",
+                            HoverEvent { over: false, lx: 0.0, ly: 0.0, w: width },
+                        );
                     }
                 }
-                if let Some(cur) = &over {
-                    if cur != &origin {
-                        let _ = app.emit_to(cur, "tab-drop-hover", true);
-                    }
+            }
+            if let Some(cur) = &over {
+                if cur != &origin {
+                    let (tlx, tly) = app
+                        .get_webview_window(cur)
+                        .and_then(|win| local_logical(&win, x, y))
+                        .unwrap_or((0.0, 0.0));
+                    let _ = app.emit_to(
+                        cur,
+                        "tab-drop-hover",
+                        HoverEvent { over: true, lx: tlx, ly: tly, w: width },
+                    );
                 }
+            }
+            // over/detached 变化必发；在自家标签栏带内时逐帧发（就地把缝挪到光标处）
+            if over != last_over || Some(detached) != last_detached || (own && !detached) {
                 let _ = app.emit_to(
                     &origin,
                     "tab-drag",
-                    DragEvent { phase: "move", over: over.clone(), x: None, y: None },
+                    DragEvent {
+                        phase: "move",
+                        over: over.clone(),
+                        x: None,
+                        y: None,
+                        lx: Some(lx),
+                        ly: Some(ly),
+                        detached: Some(detached),
+                    },
                 );
-                last_over = over;
             }
+            last_over = over;
+            last_detached = Some(detached);
         }
-        // 所有退出路径（左键释放 / 光标读取失败）统一复位重入闸
-        DRAG_ACTIVE.store(false, Ordering::SeqCst);
+        if DRAG_ACTIVE.load(Ordering::SeqCst) {
+            DRAG_ACTIVE.store(false, Ordering::SeqCst); // 光标读取失败等异常路径兜底
+        }
+    });
+}
+
+/// ghost 小窗页面就绪后一次性拉取当前显示状态（创建竞态：页面加载期间事件会丢）
+#[tauri::command]
+fn ghost_current(state: State<'_, GhostInfo>) -> GhostState {
+    state.0.lock().unwrap().clone()
+}
+
+/// 创建（或复用）拖拽跟手 ghost 小窗：无边框、透明、置顶、不进任务栏。
+/// 必须在异步上下文里建：同步路径会在主线程自锁（同 tear_off_tab 的教训）。
+fn ensure_ghost(app: &AppHandle, title: String, w: f64) {
+    if app.get_webview_window(GHOST_LABEL).is_some() {
+        ghost_emit(app, GhostState { title: Some(title), w: Some(w), cursor: None });
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let built = tauri::WebviewWindowBuilder::new(
+            &app,
+            GHOST_LABEL,
+            tauri::WebviewUrl::App("ghost.html".into()),
+        )
+        .title("MD Reader")
+        .inner_size(320.0, 48.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .closable(false)
+        .focused(false)
+        .visible(false)
+        .build();
+        if built.is_ok() {
+            ghost_emit(&app, GhostState { title: Some(title), w: Some(w), cursor: None });
+        }
     });
 }
 
@@ -493,6 +735,7 @@ pub fn run() {    tauri::Builder::default()
         .manage(InitialPath(std::env::args().nth(1)))
         .manage(FrontWindow(Mutex::new("main".into())))
         .manage(BlessedDir(Mutex::new(None)))
+        .manage(GhostInfo(Mutex::new(GhostState::default())))
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -506,7 +749,8 @@ pub fn run() {    tauri::Builder::default()
             list_md_files,
             pick_folder,
             canon_path,
-            tear_off_tab
+            tear_off_tab,
+            ghost_current
         ])
         .setup(|app| {
             // 窗口偶发以最小化状态创建，显式还原（此前曾误判为双显示器 DPI 问题，
@@ -517,6 +761,24 @@ pub fn run() {    tauri::Builder::default()
                 }
             }
             Ok(())
+        })
+        // ghost 小窗隐藏复用、不计入"还有窗口吗"：最后一个真实窗口销毁时
+        // 显式清掉 ghost 并退出，否则隐藏小窗会让进程残留（单实例转发会指向死进程）
+        .on_window_event(|window, event| {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            let app = window.app_handle();
+            let real_left = app
+                .webview_windows()
+                .iter()
+                .any(|(l, _)| *l != GHOST_LABEL);
+            if !real_left {
+                if let Some(g) = app.get_webview_window(GHOST_LABEL) {
+                    let _ = g.destroy();
+                }
+                app.exit(0);
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running mdreader");

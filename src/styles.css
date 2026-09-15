@@ -172,6 +172,66 @@ body {
   color: var(--fg);
 }
 
+/* ------------------------- 标签拖拽（记事本式动画） ------------------------- */
+
+/* 拖起：标签轻微抬起 */
+.tab.lifting {
+  position: relative;
+  z-index: 1;
+  opacity: 0.92;
+  transform: translateY(-1px) scale(1.02);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease,
+    box-shadow 0.12s ease;
+}
+/* 拖离标签栏：宽度/内边距收拢到 0，缝隙合上（ghost 小窗由原生侧贴着光标显示） */
+.tab.detached {
+  min-width: 0;
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border-right-color: transparent;
+  transition:
+    width 0.16s ease,
+    padding 0.16s ease,
+    opacity 0.16s ease;
+}
+/* 拖回自家标签栏：宽度从 0 弹回 */
+.tab.snap-in {
+  overflow: hidden;
+  transition: width 0.18s ease;
+}
+/* 插入缝：落位指示（悬停目标窗口 / 自家就地排序共用） */
+.tab-gap {
+  flex: none;
+  align-self: center;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--accent);
+  opacity: 0.16;
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+/* 新窗口落地感（启动 / 撕出）：轻微淡入 + 回弹缩放 */
+#app {
+  animation: window-in 0.16s ease-out;
+}
+@keyframes window-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* --------------------------------- 打开菜单 -------------------------------- */
 
 #open-menu {

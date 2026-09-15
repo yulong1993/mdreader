@@ -527,8 +527,9 @@ async function canonId(path) {
 }
 
 /** 直接从载荷建标签（撕出窗口交接 / 拖入合并），不读盘。
+ *  index：合并时的插入位（来自目标窗口的插入缝）；非法值一律追加末尾。
  *  @returns {Promise<boolean>} true=合并成功（源标签可移除）；false=冲突被拒（两边都保留） */
-async function addTabFromPayload({ path, source, dirty }) {
+async function addTabFromPayload({ path, source, dirty }, index) {
   // 载荷守卫：畸形事件（缺 path / source 非字符串）拒绝处理，防止幽灵标签损坏状态
   if (typeof path !== "string" || typeof source !== "string") return false;
   const idPath = await canonId(path);
@@ -557,7 +558,9 @@ async function addTabFromPayload({ path, source, dirty }) {
     return true;
   }
   const t = { id: `t${++tabIdSeq}`, path: idPath, source, dirty: !!dirty, scrollY: 0 };
-  tabs.push(t);
+  let at = tabs.length;
+  if (Number.isInteger(index) && index >= 0 && index <= tabs.length) at = index;
+  tabs.splice(at, 0, t);
   await activateTab(t.id);
   syncWatch();
   return true;
@@ -626,6 +629,7 @@ function removeTabSilently(t) {
 function renderTabBar() {
   const bar = document.querySelector("#tabbar");
   const list = document.querySelector("#tabs");
+  clearTabGap(); // 全量重建后缝元素已不在 DOM，状态一并复位
   bar.hidden = tabs.length === 0;
   list.replaceChildren(
     ...tabs.map((t) => {
@@ -724,7 +728,15 @@ document.querySelector("#tabs").addEventListener("pointerdown", (e) => {
   if (e.target.closest(".t-close")) return;
   const el = e.target.closest(".tab");
   if (!el) return;
-  dragState = { id: el.dataset.id, startX: e.clientX, startY: e.clientY, started: false };
+  dragState = {
+    id: el.dataset.id,
+    startX: e.clientX,
+    startY: e.clientY,
+    started: false,
+    el,
+    tabW: Math.max(48, Math.min(260, el.getBoundingClientRect().width)),
+    detached: false,
+  };
 });
 
 window.addEventListener(
@@ -733,7 +745,15 @@ window.addEventListener(
     if (!dragState || dragState.started) return;
     if (Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) > 5) {
       dragState.started = true; // 交给原生层跟踪（网页拿不到窗口外的鼠标）
-      invoke("drag_tab_begin").catch(() => {});
+      const t = tabs.find((x) => x.id === dragState.id);
+      if (!t) {
+        dragState = null;
+        return;
+      }
+      dragState.el?.classList.add("lifting");
+      invoke("drag_tab_begin", { title: basename(t.path), width: dragState.tabW }).catch(
+        () => {}
+      );
     }
   },
   true
@@ -742,16 +762,122 @@ window.addEventListener("pointerup", () => {
   if (dragState && !dragState.started) dragState = null; // 普通点击；已启动的原生拖拽由 tab-drag end 收尾
 });
 
-// 原生拖拽跟踪回报：over = 光标所在的本应用窗口（null = 窗口外）
+/* ---------------------- 拖拽视觉（记事本式）：摘除 / 回弹 / 插入缝 ---------------------- */
+
+let gapEl = null; // 插入缝元素：拖拽期间复用，挪位瞬时、宽度首次展开有动画
+
+function setTabGap(index, widthPx) {
+  const list = document.querySelector("#tabs");
+  if (!list || index == null) return;
+  if (!gapEl) {
+    gapEl = document.createElement("div");
+    gapEl.className = "tab-gap";
+    gapEl.style.width = "0px";
+    list.appendChild(gapEl);
+  }
+  const exclude = dragState?.started ? dragState.id : null;
+  const ref = [...list.querySelectorAll(".tab")].filter(
+    (el) => el.dataset.id !== exclude
+  )[index];
+  if (ref) list.insertBefore(gapEl, ref);
+  else list.appendChild(gapEl);
+  requestAnimationFrame(() => {
+    if (gapEl) gapEl.style.width = widthPx + "px";
+  });
+}
+
+function clearTabGap() {
+  gapEl?.remove();
+  gapEl = null;
+}
+
+/** 客户区 x → 插入位（在"不含被拖标签"的顺序空间里；越界取末尾）。
+ *  测量瞬间隐藏缝元素：缝自身的宽度会把后续标签顶开，中点反馈环会让缝卡在原地不跟手 */
+function insertionIndexAt(lx, excludeId) {
+  if (typeof lx !== "number") return null;
+  const gap = gapEl;
+  if (gap) gap.style.display = "none";
+  let idx = 0;
+  try {
+    const els = [...document.querySelectorAll("#tabs .tab")].filter(
+      (el) => el.dataset.id !== excludeId
+    );
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (lx < r.left + r.width / 2) break;
+      idx++;
+    }
+  } finally {
+    if (gap) gap.style.display = "";
+  }
+  return idx;
+}
+
+/** 标签从栏上摘除：宽度/内边距动画收拢到 0，缝隙自然合上（ghost 小窗由 Rust 接管显示） */
+function detachTabEl(s) {
+  if (s.detached || !s.el?.isConnected) return;
+  s.detached = true;
+  const el = s.el;
+  el.style.width = el.getBoundingClientRect().width + "px";
+  el.classList.add("detached");
+  void el.offsetWidth; // 先定起始宽度再收拢，transition 才会跑
+  el.style.width = "0px";
+}
+
+/** 拖回自家标签栏带内：放回原位并展开（中途往返用，不重渲染） */
+function restoreTabEl(s) {
+  if (!s.detached) return;
+  s.detached = false;
+  const el = s.el;
+  if (!el?.isConnected) return;
+  el.classList.add("snap-in");
+  el.classList.remove("detached");
+  el.style.width = s.tabW + "px";
+  setTimeout(() => {
+    el.classList.remove("snap-in");
+    el.style.width = "";
+  }, 200);
+}
+
+// 原生拖拽回报：move 维持视觉（就地让位 / 摘除），end 收尾
 listen("tab-drag", (ev) => {
   const d = ev.payload;
   if (!dragState?.started) return; // 与本次页面拖拽无关（或已收尾）
-  // 悬停高亮由 Rust 侧直接发给目标窗口；这里只处理收尾
+  if (d.phase === "move") {
+    if (d.detached) {
+      detachTabEl(dragState);
+      clearTabGap();
+    } else if (d.over === WIN_LABEL) {
+      restoreTabEl(dragState);
+      setTabGap(insertionIndexAt(d.lx, dragState.id), dragState.tabW);
+    }
+    return;
+  }
   if (d.phase !== "end") return;
-  const started = dragState;
+  const s = dragState;
   dragState = null;
-  const t = tabs.find((x) => x.id === started.id);
+  clearTabGap();
+  const t = tabs.find((x) => x.id === s.id);
   if (!t) return;
+  s.el?.classList.remove("lifting");
+
+  if (d.over === WIN_LABEL && !d.detached) {
+    // 自家标签栏内松手：就地重排（记事本行为）
+    const idx = insertionIndexAt(d.lx, t.id);
+    if (idx != null) {
+      const rest = tabs.filter((x) => x !== t);
+      rest.splice(Math.min(idx, rest.length), 0, t);
+      tabs.length = 0;
+      tabs.push(...rest);
+      persistSession();
+    }
+    renderTabBar();
+    return;
+  }
+  if (d.over === WIN_LABEL) {
+    renderTabBar(); // 悬停自家内容区/标题栏（🚫 区）松手：弹回原位
+    return;
+  }
   if (d.over && d.over !== WIN_LABEL) {
     // 拖入另一窗口：合并过去，等对方确认收到且接受后才移除本地标签
     if (t.id === activeTabId) snapshotActiveTab();
@@ -768,50 +894,87 @@ listen("tab-drag", (ev) => {
           }),
           new Promise((res) => setTimeout(() => res(undefined), 1500)),
         ]);
+        if (accepted === undefined) {
+          renderTabBar(); // 无回执：保留标签，宁重复不丢失
+          return;
+        }
         if (accepted === false) {
+          renderTabBar();
           alert(`「${basename(t.path)}」在目标窗口已有未保存修改，两边都保留了`);
           return;
         }
-        if (accepted === undefined) return; // 无回执：保留标签，宁重复不丢失
         await invoke("focus_window", { label: d.over }).catch(() => {});
         removeTabSilently(t);
+        if (!tabs.length) {
+          // 合并走最后一个标签：本窗口使命结束，像记事本一样自动关闭
+          // （随机标签的会话键不再复用，一并清掉）
+          try {
+            localStorage.removeItem(sessionKey());
+          } catch {
+            /* 存储不可用，忽略 */
+          }
+          getCurrentWindow().destroy().catch(() => {});
+        }
       })
-      .catch((e) => alert(`合并失败，标签已保留：${e}`));
-  } else if (!d.over) {
-    // 拖到所有窗口之外：撕成新窗口（原生侧创建，失败保留标签）
-    if (t.id === activeTabId) snapshotActiveTab();
-    const label = `w${Date.now().toString(36)}`;
-    try {
-      localStorage.setItem(
-        `mdr-handoff:${label}`,
-        JSON.stringify({ path: t.path, source: t.source, dirty: t.dirty })
-      );
-    } catch {
-      alert("内容过大，无法拖出为新窗口（本地存储超限），标签已保留");
-      return;
-    }
-    const scale = window.devicePixelRatio || 1;
-    invoke("tear_off_tab", {
-      label,
-      x: Math.max(0, Math.round(d.x / scale) - 200),
-      y: Math.max(0, Math.round(d.y / scale) - 40),
-    })
-      .then(() => removeTabSilently(t))
       .catch((e) => {
-        localStorage.removeItem(`mdr-handoff:${label}`);
-        alert(`新窗口创建失败，标签已保留：${e}`);
+        renderTabBar();
+        alert(`合并失败，标签已保留：${e}`);
       });
+    return;
   }
+  // 拖到所有窗口之外：撕成新窗口（原生侧创建，失败保留标签）
+  if (t.id === activeTabId) snapshotActiveTab();
+  const label = `w${Date.now().toString(36)}`;
+  try {
+    localStorage.setItem(
+      `mdr-handoff:${label}`,
+      JSON.stringify({ path: t.path, source: t.source, dirty: t.dirty })
+    );
+  } catch {
+    renderTabBar();
+    alert("内容过大，无法拖出为新窗口（本地存储超限），标签已保留");
+    return;
+  }
+  const scale = window.devicePixelRatio || 1;
+  invoke("tear_off_tab", {
+    label,
+    x: Math.max(0, Math.round(d.x / scale) - 200),
+    y: Math.max(0, Math.round(d.y / scale) - 40),
+  })
+    .then(() => removeTabSilently(t))
+    .catch((e) => {
+      localStorage.removeItem(`mdr-handoff:${label}`);
+      renderTabBar();
+      alert(`新窗口创建失败，标签已保留：${e}`);
+    });
 });
 
-// 悬停邀请 / 合并接收（接受与否回告源窗口，源窗口据此决定是否移除标签）
+// 悬停邀请：目标窗口按光标位置裂开插入缝；落在内容区 = 追加末尾（更宽容的合并）
+let dropGapIndex = null;
 listen("tab-drop-hover", (ev) => {
-  document.querySelector("#tabbar").classList.toggle("drop-target", !!ev.payload);
+  const p = ev.payload || {};
+  const bar = document.querySelector("#tabbar");
+  if (!p.over) {
+    // 只清视觉，保留 dropGapIndex：drag_end 的 over:false 总是先于合并事件到达
+    bar.classList.remove("drop-target");
+    clearTabGap();
+    return;
+  }
+  bar.classList.add("drop-target");
+  const inBand = typeof p.ly === "number" && p.ly >= 42 && p.ly <= 100;
+  const idx = inBand ? insertionIndexAt(p.lx, null) : tabs.length;
+  dropGapIndex = idx == null ? tabs.length : idx;
+  setTabGap(dropGapIndex, Math.max(64, Math.min(200, p.w || 150)));
 });
 
+// 合并接收（接受与否回告源窗口，源窗口据此决定是否移除标签）
 listen("tab-merge", (ev) => {
   const h = ev.payload;
-  addTabFromPayload(h)
+  const at = dropGapIndex;
+  dropGapIndex = null;
+  clearTabGap();
+  document.querySelector("#tabbar").classList.remove("drop-target");
+  addTabFromPayload(h, at)
     .then((ok) =>
       h?.from ? emitTo(h.from, "tab-merge-result", { path: h.path, ok: !!ok }) : null
     )

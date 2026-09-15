@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for all app windows (main + torn-off tab windows)",
-  "windows": ["main", "w*"],
+  "description": "Capability for all app windows (main + torn-off tab windows + drag ghost)",
+  "windows": ["main", "w*", "ghost"],
   "permissions": [
     "core:default",
     "core:window:allow-destroy",
