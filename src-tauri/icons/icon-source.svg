@@ -1,47 +1,137 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" version="1.1" aria-labelledby="title desc">
+  <title id="title">MD Reader</title>
+  <desc id="desc">Editable vector reconstruction: blue rounded app tile, open white book with exactly two pages on each side, pale blue circuits on the upper left page, and a blue bookmark on the upper right page. All artwork is native SVG; no embedded raster images or external assets.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7DD0F8"/>
-      <stop offset="1" stop-color="#2E9FEE"/>
+    <linearGradient id="tile-blue" x1="627" y1="58" x2="627" y2="1166" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4ad0f8"/>
+      <stop offset=".26" stop-color="#209aff"/>
+      <stop offset=".57" stop-color="#0879ff"/>
+      <stop offset="1" stop-color="#0050f4"/>
     </linearGradient>
-    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#EDF6FE"/>
+    <radialGradient id="tile-top-light" cx="616" cy="28" r="804" gradientTransform="translate(0 10) scale(1 .69)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a2ffef" stop-opacity=".57"/>
+      <stop offset=".63" stop-color="#65d9ff" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#5fd0ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="tile-bottom-light" cx="622" cy="988" r="470" gradientTransform="translate(0 346) scale(1 .65)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3fbaff" stop-opacity=".46"/>
+      <stop offset="1" stop-color="#1689ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="left-under" x1="183" y1="590" x2="619" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f9fcff"/>
+      <stop offset=".2" stop-color="#d6e3f6"/>
+      <stop offset=".57" stop-color="#bad0ef"/>
+      <stop offset="1" stop-color="#86b2ed"/>
     </linearGradient>
-    <linearGradient id="spine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#BCDDF5" stop-opacity="0.2"/>
-      <stop offset="0.5" stop-color="#BCDDF5" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#BCDDF5" stop-opacity="0.2"/>
+    <linearGradient id="right-under" x1="636" y1="670" x2="1076" y2="589" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#86b2ed"/>
+      <stop offset=".43" stop-color="#bad0ef"/>
+      <stop offset=".8" stop-color="#d8e5f7"/>
+      <stop offset="1" stop-color="#f8fcff"/>
     </linearGradient>
-    <filter id="sh" x="-25%" y="-25%" width="150%" height="150%">
-      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#0B5E9E" flood-opacity="0.35"/>
+    <linearGradient id="left-paper" x1="292" y1="436" x2="671" y2="727" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset=".46" stop-color="#f9faff"/>
+      <stop offset=".79" stop-color="#edf2fb"/>
+      <stop offset="1" stop-color="#d0e0f6"/>
+    </linearGradient>
+    <linearGradient id="right-paper" x1="697" y1="727" x2="956" y2="416" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e5edfa"/>
+      <stop offset=".48" stop-color="#f7f9fe"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="spine-shade" x1="614" y1="0" x2="638" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#91b8e8" stop-opacity="0"/>
+      <stop offset=".46" stop-color="#7ea9df" stop-opacity=".25"/>
+      <stop offset=".59" stop-color="#a0c5ee" stop-opacity=".21"/>
+      <stop offset="1" stop-color="#f6faff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="circuit-blue" x1="272" y1="450" x2="574" y2="633" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c5dfff"/>
+      <stop offset=".55" stop-color="#88c3ff"/>
+      <stop offset="1" stop-color="#65b6ff"/>
+    </linearGradient>
+    <linearGradient id="node-blue" x1="0" y1="0" x2=".7" y2="1">
+      <stop stop-color="#65c4ff"/>
+      <stop offset="1" stop-color="#3198ff"/>
+    </linearGradient>
+    <linearGradient id="bookmark-blue" x1="866" y1="290" x2="909" y2="479" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69c8ff"/>
+      <stop offset=".37" stop-color="#209dff"/>
+      <stop offset=".78" stop-color="#0878ff"/>
+      <stop offset="1" stop-color="#0060f5"/>
+    </linearGradient>
+    <linearGradient id="bookmark-edge" x1="855" y1="294" x2="910" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b0e4ff" stop-opacity=".65"/>
+      <stop offset=".55" stop-color="#3aafff" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#0050e5" stop-opacity=".9"/>
+    </linearGradient>
+    <filter id="tile-shadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="24"/>
     </filter>
-    <clipPath id="pageClipL">
-      <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z"/>
+    <filter id="book-shadow" x="-25%" y="-25%" width="150%" height="165%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="23"/>
+    </filter>
+    <filter id="page-shadow" x="-30%" y="-20%" width="165%" height="160%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="17"/>
+    </filter>
+    <filter id="bookmark-shadow" x="-60%" y="-30%" width="230%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <clipPath id="left-page-clip">
+      <path d="M627 410 C574 333 448 286 322 287 C291 287 273 301 270 332 L236 785 C233 813 251 830 278 828 C422 820 552 844 615 938 Q627 954 627 937 Z"/>
     </clipPath>
   </defs>
-  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
 
-  <g filter="url(#sh)" transform="translate(512,552) scale(1.26) translate(-512,-552)">
-    <path d="M512 400
-             C 420 352, 300 344, 190 362
-             L 190 676
-             C 300 658, 420 666, 512 714
-             C 604 666, 724 658, 834 676
-             L 834 362
-             C 724 344, 604 352, 512 400 Z"
-          fill="#2795DB"/>
-    <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z" fill="url(#page)"/>
-    <g clip-path="url(#pageClipL)">
-      <rect x="196" y="340" width="34" height="330" rx="14" fill="url(#page)"/>
-    </g>
-    <g transform="translate(1024,0) scale(-1,1)">
-      <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z" fill="url(#page)"/>
-      <g clip-path="url(#pageClipL)">
-        <rect x="196" y="340" width="34" height="330" rx="14" fill="url(#page)"/>
-      </g>
-    </g>
-    <path d="M506 388 L518 388 L518 692 L506 692 Z" fill="url(#spine)"/>
-    <text x="512" y="606" font-family="Segoe UI, -apple-system, sans-serif" font-size="188" font-weight="800" fill="#0C7BC0" text-anchor="middle" letter-spacing="8">MD</text>
+  <g id="background" data-name="Background">
+    <path id="tile-cast-shadow" d="M346 85 H910 C1088 85 1180 189 1180 362 V900 C1180 1095 1082 1188 908 1188 H345 C166 1188 76 1094 76 901 V364 C76 184 170 85 346 85Z" fill="#1b5ccd" opacity=".16" filter="url(#tile-shadow)"/>
+    <path id="app-tile" d="M348 58 H908 C1001 58 1065 82 1114 131 C1168 184 1195 250 1195 348 V878 C1195 978 1172 1047 1119 1100 C1068 1147 1007 1166 917 1166 H338 C245 1166 179 1145 129 1095 C78 1044 62 975 62 885 V347 C62 250 88 184 141 132 C193 81 258 58 348 58Z" fill="url(#tile-blue)"/>
+    <path id="top-glow" d="M348 58 H908 C1001 58 1065 82 1114 131 C1168 184 1195 250 1195 348 V878 C1195 978 1172 1047 1119 1100 C1068 1147 1007 1166 917 1166 H338 C245 1166 179 1145 129 1095 C78 1044 62 975 62 885 V347 C62 250 88 184 141 132 C193 81 258 58 348 58Z" fill="url(#tile-top-light)"/>
+    <ellipse id="bottom-glow" cx="627" cy="979" rx="483" ry="185" fill="url(#tile-bottom-light)"/>
+    <path id="tile-rim" d="M348 58 H908 C1001 58 1065 82 1114 131 C1168 184 1195 250 1195 348 V878 C1195 978 1172 1047 1119 1100 C1068 1147 1007 1166 917 1166 H338 C245 1166 179 1145 129 1095 C78 1044 62 975 62 885 V347 C62 250 88 184 141 132 C193 81 258 58 348 58Z" fill="none" stroke="#b7edff" stroke-opacity=".38" stroke-width="1.5"/>
+  </g>
+
+  <g id="book-cast-shadow" data-name="Book shadow" fill="#00399f" opacity=".48" filter="url(#book-shadow)">
+    <path d="M218 425 Q232 393 290 397 L971 397 Q1047 394 1058 436 L1085 889 Q1088 939 1041 939 C864 895 724 918 633 970 Q627 975 617 968 C510 901 358 897 213 938 Q162 948 171 897Z"/>
+  </g>
+
+  <g id="lower-pages" data-name="Lower pages - one on each side" stroke-linejoin="round">
+    <path id="left-lower-page" d="M270 368 C226 374 199 379 195 413 L169 866 C164 896 180 916 211 908 C368 866 517 876 615 941 Q627 951 627 938 L627 447 C531 389 386 353 270 368Z" fill="url(#left-under)" stroke="#f0f7ff" stroke-width="2"/>
+    <path id="right-lower-page" d="M985 368 C1029 373 1057 383 1061 413 L1087 866 C1091 897 1076 916 1045 908 C889 866 738 876 639 941 Q627 951 627 938 L627 447 C725 389 869 353 985 368Z" fill="url(#right-under)" stroke="#eff7ff" stroke-width="2"/>
+  </g>
+
+  <g id="upper-page-shadows" data-name="Page separation shadows" fill="#3478d5" opacity=".32" filter="url(#page-shadow)">
+    <path d="M278 378 L617 448 L624 939 C539 842 416 844 279 850 Q241 847 241 813Z"/>
+    <path d="M977 378 L637 448 L630 939 C714 842 840 844 975 850 Q1014 847 1013 813Z"/>
+  </g>
+
+  <g id="upper-pages" data-name="Upper pages - one on each side">
+    <path id="left-upper-page" d="M627 410 C574 333 448 286 322 287 C291 287 273 301 270 332 L236 785 C233 813 251 830 278 828 C422 820 552 844 615 938 Q627 954 627 937Z" fill="url(#left-paper)"/>
+    <path id="right-upper-page" d="M627 410 C690 334 810 290 929 288 C963 286 982 301 985 332 L1019 785 C1022 813 1004 830 977 828 C834 820 703 844 639 938 Q627 954 627 937Z" fill="url(#right-paper)"/>
+    <path id="left-paper-edge" d="M270 332 C273 301 291 287 322 287 C448 286 574 333 627 410 M236 785 C233 813 251 830 278 828 C422 820 552 844 615 938" fill="none" stroke="#ffffff" stroke-opacity=".75" stroke-width="2.2"/>
+    <path id="right-paper-edge" d="M627 410 C690 334 810 290 929 288 C963 286 982 301 985 332 M1019 785 C1022 813 1004 830 977 828 C834 820 703 844 639 938" fill="none" stroke="#ffffff" stroke-opacity=".8" stroke-width="2.2"/>
+    <path id="center-fold" d="M613 392 Q621 400 627 410 Q633 402 641 394 L641 934 Q627 958 613 934Z" fill="url(#spine-shade)"/>
+  </g>
+
+  <g id="left-page-circuits" data-name="Left page circuits" clip-path="url(#left-page-clip)" fill="none" stroke="url(#circuit-blue)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+    <path id="circuit-1" d="M261 388 L387 398 L433 472 L496 482"/>
+    <path id="circuit-2" d="M258 430 L352 437 L419 542 L484 549 L540 560"/>
+    <path id="circuit-3" d="M257 470 L340 476 L407 575 L456 581"/>
+    <path id="circuit-4" d="M310 555 L375 635 L457 643 L533 654 L568 710" opacity=".8"/>
+    <path id="circuit-5" d="M306 643 L347 697 L429 703" opacity=".8"/>
+    <circle id="node-1-ring" cx="510" cy="484" r="15" fill="#fcfeff" stroke="#6bb7ff"/>
+    <ellipse id="node-2-solid" cx="555" cy="563" rx="17" ry="19" fill="url(#node-blue)" stroke="#58b5ff" stroke-width="1.5"/>
+    <circle id="node-3-solid" cx="463" cy="582" r="10" fill="url(#node-blue)" stroke="none"/>
+    <circle id="node-4-solid" cx="309" cy="555" r="15" fill="url(#node-blue)" stroke="none"/>
+    <circle id="node-5-solid" cx="306" cy="643" r="9" fill="#b7d9ff" stroke="none"/>
+    <circle id="node-6-ring" cx="443" cy="705" r="13" fill="#fcfeff" stroke="#73baff"/>
+    <ellipse id="node-7-ring" cx="572" cy="720" rx="10.5" ry="12.5" fill="#eaf4ff" stroke="#96c6ff" stroke-width="5.5"/>
+  </g>
+
+  <g id="bookmark" data-name="Blue bookmark">
+    <path id="bookmark-cast-shadow" d="M845 310 Q845 301 855 300 L920 293 Q930 292 930 303 L937 478 Q937 489 929 484 L894 460 Q889 457 886 460 L852 492 Q844 498 844 486Z" fill="#477dcc" opacity=".25" filter="url(#bookmark-shadow)"/>
+    <path id="bookmark-ribbon" d="M837 306 Q837 298 845 296 L914 287 Q922 286 923 295 L929 469 Q930 478 923 474 L887 450 Q883 447 879 451 L845 481 Q837 488 837 477Z" fill="url(#bookmark-blue)" stroke="url(#bookmark-edge)" stroke-width="2" stroke-linejoin="round"/>
+    <path id="bookmark-bottom-edge" d="M839 479 Q840 484 845 479 L879 449 Q883 445 888 449 L923 472 Q928 475 928 469" fill="none" stroke="#0455e5" stroke-opacity=".42" stroke-width="3" stroke-linecap="round"/>
   </g>
 </svg>
