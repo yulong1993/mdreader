@@ -324,7 +324,7 @@ mod dragffi {
     pub fn lbutton_down() -> bool {
         unsafe { (GetAsyncKeyState(0x01) as u16) & 0x8000 != 0 }
     }
-    /// a 是否在 b 的上层（沿顶层 Z 序链向上走，遇到 b 即 a 在上）。
+    /// a 是否在 b 的上层（沿顶层 Z 序链从 a 向下走，遇到 b 即 b 在 a 之下）。
     /// 撕出的窗口常与原窗口重叠，命中测试必须取最上层那个。
     pub fn above(a: isize, b: isize) -> bool {
         if a == 0 || b == 0 {
@@ -335,7 +335,7 @@ mod dragffi {
             if h == b {
                 return true;
             }
-            h = unsafe { GetWindow(h, 3 /* GW_HWNDPREV */) };
+            h = unsafe { GetWindow(h, 2 /* GW_HWNDNEXT，Z 序中更低一层 */) };
         }
         false
     }
@@ -379,8 +379,6 @@ struct GhostState {
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     w: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cursor: Option<&'static str>, // "default" | "no-drop"
 }
 struct GhostInfo(Mutex<GhostState>);
 
@@ -391,9 +389,6 @@ fn ghost_emit(app: &AppHandle, patch: GhostState) {
         }
         if patch.w.is_some() {
             g.w = patch.w;
-        }
-        if patch.cursor.is_some() {
-            g.cursor = patch.cursor;
         }
         let _ = app.emit_to(GHOST_LABEL, "ghost-state", &*g);
     }
@@ -511,7 +506,6 @@ fn drag_tab_begin(
         let mut last_detached: Option<bool> = None;
         let mut ghost_spawned = false;
         let mut ghost_shown = false;
-        let mut ghost_cursor: Option<&'static str> = None;
         loop {
             std::thread::sleep(Duration::from_millis(12));
             let Some((x, y)) = dragffi::cursor() else { break };
@@ -538,12 +532,6 @@ fn drag_tab_begin(
                         ghost_shown = true;
                         let _ = g.show();
                     }
-                }
-                // 悬停自己窗口的内容区/标题栏 = 此处不能放（图2 的 🚫）
-                let cur: &'static str = if own { "no-drop" } else { "default" };
-                if ghost_cursor != Some(cur) {
-                    ghost_cursor = Some(cur);
-                    ghost_emit(&app, GhostState { title: None, w: None, cursor: Some(cur) });
                 }
             } else if ghost_shown {
                 ghost_shown = false;
@@ -611,7 +599,7 @@ fn ghost_current(state: State<'_, GhostInfo>) -> GhostState {
 /// 必须在异步上下文里建：同步路径会在主线程自锁（同 tear_off_tab 的教训）。
 fn ensure_ghost(app: &AppHandle, title: String, w: f64) {
     if app.get_webview_window(GHOST_LABEL).is_some() {
-        ghost_emit(app, GhostState { title: Some(title), w: Some(w), cursor: None });
+        ghost_emit(app, GhostState { title: Some(title), w: Some(w) });
         return;
     }
     let app = app.clone();
@@ -636,7 +624,7 @@ fn ensure_ghost(app: &AppHandle, title: String, w: f64) {
         .visible(false)
         .build();
         if built.is_ok() {
-            ghost_emit(&app, GhostState { title: Some(title), w: Some(w), cursor: None });
+            ghost_emit(&app, GhostState { title: Some(title), w: Some(w) });
         }
     });
 }

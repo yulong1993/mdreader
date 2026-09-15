@@ -528,8 +528,9 @@ async function canonId(path) {
 
 /** 直接从载荷建标签（撕出窗口交接 / 拖入合并），不读盘。
  *  index：合并时的插入位（来自目标窗口的插入缝）；非法值一律追加末尾。
+ *  scrollY：拖来时的阅读位置，只对新标签生效；目标窗口已有同文件标签则保留自己的位置。
  *  @returns {Promise<boolean>} true=合并成功（源标签可移除）；false=冲突被拒（两边都保留） */
-async function addTabFromPayload({ path, source, dirty }, index) {
+async function addTabFromPayload({ path, source, dirty, scrollY }, index) {
   // 载荷守卫：畸形事件（缺 path / source 非字符串）拒绝处理，防止幽灵标签损坏状态
   if (typeof path !== "string" || typeof source !== "string") return false;
   const idPath = await canonId(path);
@@ -557,7 +558,13 @@ async function addTabFromPayload({ path, source, dirty }, index) {
     persistSession();
     return true;
   }
-  const t = { id: `t${++tabIdSeq}`, path: idPath, source, dirty: !!dirty, scrollY: 0 };
+  const t = {
+    id: `t${++tabIdSeq}`,
+    path: idPath,
+    source,
+    dirty: !!dirty,
+    scrollY: Number(scrollY) || 0,
+  };
   let at = tabs.length;
   if (Number.isInteger(index) && index >= 0 && index <= tabs.length) at = index;
   tabs.splice(at, 0, t);
@@ -673,7 +680,14 @@ function persistSession() {
     try {
       localStorage.setItem(
         sessionKey(),
-        JSON.stringify({ paths: tabs.map((t) => t.path), active: currentPath })
+        JSON.stringify({
+          paths: tabs.map((t) => t.path),
+          active: currentPath,
+          // 各标签阅读位置（与 paths 平行；活跃标签取实时 scrollTop）
+          scrolls: tabs.map((t) =>
+            t.id === activeTabId ? els.previewPane.scrollTop : t.scrollY || 0
+          ),
+        })
       );
     } catch {
       /* 隐私模式等存储不可用，忽略 */
@@ -681,7 +695,10 @@ function persistSession() {
   }, 300);
 }
 
-/** 重启后恢复本窗口上次的标签页；读不到的文件跳过 */
+// 滚动 = 阅读位置在变：随滚随存（persistSession 自带 300ms 去抖，滚动期间不落盘）
+els.previewPane.addEventListener("scroll", () => persistSession(), { passive: true });
+
+/** 重启后恢复本窗口上次的标签页（含各自阅读位置）；读不到的文件跳过 */
 async function restoreSession() {
   let saved = null;
   try {
@@ -689,12 +706,20 @@ async function restoreSession() {
   } catch {
     return;
   }
-  for (const p of saved?.paths || []) {
+  const list = saved?.paths || [];
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
     const idPath = await canonId(p); // 用规范身份去重，别名路径不会再开出重复标签
     if (tabs.some((t) => samePath(t.path, idPath))) continue;
     try {
       const source = await invoke("read_file", { path: idPath });
-      tabs.push({ id: `t${++tabIdSeq}`, path: idPath, source, dirty: false, scrollY: 0 });
+      tabs.push({
+        id: `t${++tabIdSeq}`,
+        path: idPath,
+        source,
+        dirty: false,
+        scrollY: Number(saved?.scrolls?.[i]) || 0,
+      });
     } catch {
       /* 文件已被删除/移动：跳过 */
     }
@@ -874,14 +899,16 @@ listen("tab-drag", (ev) => {
     renderTabBar();
     return;
   }
-  if (d.over === WIN_LABEL) {
-    renderTabBar(); // 悬停自家内容区/标题栏（🚫 区）松手：弹回原位
-    return;
-  }
   if (d.over && d.over !== WIN_LABEL) {
     // 拖入另一窗口：合并过去，等对方确认收到且接受后才移除本地标签
     if (t.id === activeTabId) snapshotActiveTab();
-    emitTo(d.over, "tab-merge", { path: t.path, source: t.source, dirty: t.dirty, from: WIN_LABEL })
+    emitTo(d.over, "tab-merge", {
+      path: t.path,
+      source: t.source,
+      dirty: t.dirty,
+      scrollY: t.scrollY || 0,
+      from: WIN_LABEL,
+    })
       .then(async () => {
         const accepted = await Promise.race([
           new Promise((res) => {
@@ -922,13 +949,18 @@ listen("tab-drag", (ev) => {
       });
     return;
   }
-  // 拖到所有窗口之外：撕成新窗口（原生侧创建，失败保留标签）
+  // 拖离标签栏后松手（自家内容区/标题栏，或所有窗口之外）：撕成新窗口（原生侧创建，失败保留标签）
   if (t.id === activeTabId) snapshotActiveTab();
   const label = `w${Date.now().toString(36)}`;
   try {
     localStorage.setItem(
       `mdr-handoff:${label}`,
-      JSON.stringify({ path: t.path, source: t.source, dirty: t.dirty })
+      JSON.stringify({
+        path: t.path,
+        source: t.source,
+        dirty: t.dirty,
+        scrollY: t.scrollY || 0,
+      })
     );
   } catch {
     renderTabBar();

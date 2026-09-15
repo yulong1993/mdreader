@@ -8,6 +8,7 @@
   --accent: #0969da;
   --tb-bg: #f6f8fa;
   --hover: #eef1f4;
+  --tab-active: #d8eafb;
   --code-font: "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
   --sans-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
     Helvetica, Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
@@ -21,6 +22,7 @@ html[data-theme="dark"] {
   --accent: #4493f8;
   --tb-bg: #151b23;
   --hover: #1c2129;
+  --tab-active: #1c344f;
 }
 
 * {
@@ -140,7 +142,7 @@ body {
 }
 .tab.active {
   color: var(--fg);
-  background: var(--bg);
+  background: var(--tab-active);
   box-shadow: inset 0 3px 0 var(--accent);
 }
 .tab:not(.active):hover {
