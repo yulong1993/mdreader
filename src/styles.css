@@ -458,8 +458,12 @@ pre.mermaid-error {
   border-radius: 12px;
 }
 #welcome .logo {
-  font-size: 52px;
-  margin-bottom: 8px;
+  line-height: 0;
+  margin-bottom: 14px;
+}
+#welcome .logo svg {
+  border-radius: 20%;
+  box-shadow: 0 6px 24px rgb(27 95 232 / 0.35);
 }
 #welcome h1 {
   color: var(--fg);
