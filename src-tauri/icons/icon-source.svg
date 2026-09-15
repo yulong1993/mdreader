@@ -1,20 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#4DA2FF"/>
-      <stop offset="1" stop-color="#1B5FE8"/>
+      <stop offset="0" stop-color="#7DD0F8"/>
+      <stop offset="1" stop-color="#2E9FEE"/>
     </linearGradient>
     <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#EDF3FE"/>
+      <stop offset="1" stop-color="#EDF6FE"/>
     </linearGradient>
     <linearGradient id="spine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#B7CCEF" stop-opacity="0.2"/>
-      <stop offset="0.5" stop-color="#B7CCEF" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#B7CCEF" stop-opacity="0.2"/>
+      <stop offset="0" stop-color="#BCDDF5" stop-opacity="0.2"/>
+      <stop offset="0.5" stop-color="#BCDDF5" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#BCDDF5" stop-opacity="0.2"/>
     </linearGradient>
     <filter id="sh" x="-25%" y="-25%" width="150%" height="150%">
-      <feDropShadow dx="0" dy="16" stdDeviation="22" flood-color="#0B3D91" flood-opacity="0.32"/>
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#0B5E9E" flood-opacity="0.35"/>
     </filter>
     <clipPath id="pageClipL">
       <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z"/>
@@ -22,7 +22,7 @@
   </defs>
   <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
 
-  <g filter="url(#sh)">
+  <g filter="url(#sh)" transform="translate(512,552) scale(1.26) translate(-512,-552)">
     <path d="M512 400
              C 420 352, 300 344, 190 362
              L 190 676
@@ -30,10 +30,10 @@
              C 604 666, 724 658, 834 676
              L 834 362
              C 724 344, 604 352, 512 400 Z"
-          fill="#2E6BD9"/>
-    <g>
-      <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z" fill="url(#page)"/>
-      <rect x="196" y="340" width="34" height="330" rx="14" fill="url(#page)" clip-path="url(#pageClipL)"/>
+          fill="#2795DB"/>
+    <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z" fill="url(#page)"/>
+    <g clip-path="url(#pageClipL)">
+      <rect x="196" y="340" width="34" height="330" rx="14" fill="url(#page)"/>
     </g>
     <g transform="translate(1024,0) scale(-1,1)">
       <path d="M512 388 C 428 344, 316 336, 214 352 L 214 656 C 316 640, 428 648, 512 692 Z" fill="url(#page)"/>
@@ -42,6 +42,6 @@
       </g>
     </g>
     <path d="M506 388 L518 388 L518 692 L506 692 Z" fill="url(#spine)"/>
+    <text x="512" y="606" font-family="Segoe UI, -apple-system, sans-serif" font-size="188" font-weight="800" fill="#0C7BC0" text-anchor="middle" letter-spacing="8">MD</text>
   </g>
-  <text x="512" y="606" font-family="Segoe UI, -apple-system, sans-serif" font-size="188" font-weight="800" fill="#1D5FE8" text-anchor="middle" letter-spacing="8">MD</text>
 </svg>
