@@ -1146,8 +1146,10 @@ function openBlockEditByKey(key) {
 }
 
 /** 原始 HTML 区（如 <details> 折叠块）没有锚，按其内部 markdown 锚的行号
- *  夹逼整段范围：开标签 = 内部首锚之前最近的 html 块，闭标签 = 内部末锚之后
- *  最近的 html 块（未闭合则扩到文末）。找不到开标签说明不是被吞并的容器区。 */
+ *  夹逼整段范围。开标签不是"内部首锚之前最近的 html 块"——容器开标签和
+ *  内部 markdown 之间可能还夹着别的 html 块（如 <div>），要从近到远按顶层
+ *  元素标签名回溯匹配（<details 不会匹配到 </details> 或内层 <div）。
+ *  闭标签 = 内部末锚之后最近的 html 块；未闭合则扩到文末。 */
 function htmlSectionRange(el) {
   const anchors = el.querySelectorAll("[data-line]");
   if (!anchors.length || !htmlBlockRuns.length) return null;
@@ -1158,14 +1160,22 @@ function htmlSectionRange(el) {
     s1 = Math.min(s1, s);
     e1 = Math.max(e1, e);
   }
+  const lines = currentSource.split("\n");
+  const wantTag = "<" + el.tagName.toLowerCase();
   let open = null;
+  for (const r of [...htmlBlockRuns].sort((a, b) => b.s - a.s)) {
+    if (r.e > s1) continue; // 只回溯首锚之前的块，近的优先
+    if (lines.slice(r.s, r.e).join("\n").includes(wantTag)) {
+      open = r;
+      break;
+    }
+  }
   let close = null;
   for (const r of htmlBlockRuns) {
-    if (r.e <= s1 && (!open || r.s > open.s)) open = r;
     if (r.s >= e1 && (!close || r.s < close.s)) close = r;
   }
   if (!open) return null;
-  return { s: open.s, e: close ? close.e : currentSource.split("\n").length };
+  return { s: open.s, e: close ? close.e : lines.length };
 }
 
 /** 点击目标 → 可编辑块 { el, s, e }：优先 data-line 锚（含被原始 HTML 嵌套的
@@ -1858,7 +1868,10 @@ listen("fs-changed", async (e) => {
     const scrollTop = els.previewPane.scrollTop;
     try {
       const source = await invoke("read_file", { path: t.path });
-      if (editing && editorDirty) return; // 编辑未保存期间忽略外部变化（用户编辑优先）
+      // 编辑未保存期间忽略外部变化（用户编辑优先）。块编辑器开着也要忽略：
+      // 已输入未提交时 editorDirty 还是 false，此时重载会让编辑按过期行号
+      // 拼进新文档（实测会吃掉相邻段落）
+      if (editing && (editorDirty || activeBlockEdit)) return;
       t.source = source;
       currentSource = source;
       await renderDoc(source);
