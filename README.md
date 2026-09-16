@@ -142,6 +142,7 @@ npm run tauri build
 
 ```
 ├── index.html            # 应用外壳（工具栏/大纲/内容区）
+├── ghost.html            # 标签拖拽时的跟手 ghost 小窗
 ├── src/
 │   ├── main.js           # 渲染管线 + Obsidian 扩展 + 主题 + 大纲 + 事件
 │   └── styles.css        # 应用 chrome / callout / 打印样式
@@ -152,5 +153,8 @@ npm run tauri build
 ├── samples/
 │   ├── demo.md           # GitHub 风格渲染测试文档
 │   └── demo-obsidian.md  # Obsidian 语法测试文档（双链/callout/高亮/标签）
+├── docs/images/          # README 界面截图
+├── licenses/             # 随包分发资源的授权文本（KaTeX 字体 OFL 1.1）
+├── tools/                # 绿色版 .md 文件关联/撤销关联注册表脚本
 └── research.md           # 技术调研（选型依据）
 ```
