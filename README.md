@@ -1,6 +1,8 @@
 # MD Reader
 
-一个为"每天要读很多 Markdown 的人"做的 Windows 阅读器。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+一个为"每天要读很多 Markdown 的人"做的 Windows 阅读器，以 [MIT 许可](LICENSE)开源。
 
 研究报告、会议纪要、技术笔记、AI 产出的长文——如果你的硬盘里堆满了 .md 文件，MD Reader 让它们读起来像一本书，而不是一堆源代码。
 
