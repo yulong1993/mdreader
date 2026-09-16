@@ -71,6 +71,24 @@
 - **渲染消毒**：DOMPurify 清洗所有渲染 HTML 与 mermaid SVG（允许内联 `style`）
 - **依赖审计**：`npm audit` 0 漏洞（mermaid 固定 11.x）
 
+## 开源组件与授权
+
+本程序使用以下开源组件（均为允许商用与再分发的宽松许可）：
+
+| 组件 | 用途 | 许可 |
+|------|------|------|
+| Tauri（含插件） | 应用框架 | MIT / Apache-2.0 |
+| markdown-it 及插件（anchor / emoji / footnote / task-lists / katex） | Markdown 渲染 | MIT / Unlicense / ISC |
+| DOMPurify | HTML 消毒 | Apache-2.0 / MPL-2.0 |
+| highlight.js | 代码高亮 | BSD-3-Clause |
+| Mermaid | 图表 | MIT |
+| KaTeX | 数学公式（软件） | MIT |
+| KaTeX 字体 | 数学字形（随包分发） | SIL OFL 1.1（免费商用，全文见 `licenses/KaTeX-fonts-OFL-1.1.txt`） |
+| github-markdown-css | 排版样式 | MIT |
+| Rust 侧依赖（serde、notify、encoding_rs 等） | 序列化 / 文件监听 / 编码 | MIT / Apache-2.0 / CC0 类 |
+
+界面字体（Segoe UI、微软雅黑、Consolas、Cascadia Code 等）均为**按名称引用**、由用户操作系统解析，程序不附带、不分发这些字体文件；其中 Cascadia Code 本身也是微软以 SIL OFL 发布的开源字体。
+
 ## 开发
 
 ```bash
