@@ -6,6 +6,16 @@
 
 研究报告、会议纪要、技术笔记、AI 产出的长文——如果你的硬盘里堆满了 .md 文件，MD Reader 让它们读起来像一本书，而不是一堆源代码。
 
+## 界面预览
+
+![GitHub 风格排版：大纲、表格、代码高亮、数学公式](docs/images/demo-github-style.png)
+
+![Obsidian 语法：双链、Callout 提示框、高亮与标签](docs/images/demo-obsidian.png)
+
+![暗色主题：代码高亮与公式同样清晰](docs/images/demo-dark.png)
+
+![双击任意段落就地编辑，Ctrl+Enter 提交](docs/images/demo-block-edit.png)
+
 ## 读：舒服地读
 
 打开就能读。GitHub 风格排版，代码高亮、表格、数学公式、Mermaid 流程图、任务清单、Obsidian 风格的双链、提示框与高亮，常见写法都认；老文档的 GBK 编码也能自动识别。
