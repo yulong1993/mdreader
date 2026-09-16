@@ -1377,6 +1377,7 @@ function annotateSourceLines(tokens, fmLines) {
       if (t.map) htmlBlockRuns.push({ s: fmLines + t.map[0], e: fmLines + t.map[1] });
     } else if (depth === 0 && t.map && t.type !== "inline") {
       t.attrSet("data-line", `${fmLines + t.map[0]}-${fmLines + t.map[1]}`);
+      t.attrSet("data-line-no", String(fmLines + t.map[0] + 1)); // 行号栏显示用（1-based）
     }
     depth += t.nesting;
   }
@@ -1404,6 +1405,13 @@ async function renderDoc(source) {
   els.welcome.hidden = true;
   els.content.hidden = false;
   els.content.innerHTML = html;
+
+  // fence/缩进代码块的 token 属性挂在 <pre> 内层 <code> 上，行号挪到外层
+  // <pre>——号码画在代码块自己的深色背景/滚动区外，与其他块的 gutter 对齐
+  for (const c of els.content.querySelectorAll("pre > code[data-line-no]")) {
+    c.parentElement.dataset.lineNo = c.dataset.lineNo;
+    c.removeAttribute("data-line-no");
+  }
 
   transformCallouts(els.content);
   if (currentDir) await resolveWikiAssets(els.content, currentDir);
@@ -1444,6 +1452,9 @@ async function renderMermaidBlocks() {
       // fence 渲染器把 token 属性挂在 <pre> 内层的 <code> 上，两层都查
       const anchor = code.dataset.line || code.parentElement.dataset.line;
       if (anchor) div.dataset.line = anchor;
+      // 行号锚同样搬到 mermaid 容器上（renderDoc 已把它挪到外层 pre）
+      const lineNo = code.dataset.lineNo || code.parentElement.dataset.lineNo;
+      if (lineNo) div.dataset.lineNo = lineNo;
       // mermaid 输出同样过一遍消毒，避免渲染器漏洞成为 XSS 旁路。
       // foreignObject（mermaid 节点文字都放在里面）需三重放行：
       // 1) ADD_TAGS 允许标签本身（默认在 svgDisallowed 名单）
@@ -1757,6 +1768,20 @@ document.querySelector("#btn-outline").addEventListener("click", () => {
   localStorage.setItem("mdr-outline", outlineVisible() ? "hidden" : "visible");
   els.outline.hidden = !outlineVisible() || !els.outline.childElementCount;
 });
+
+// 行号栏：正文左侧显示每个顶层块的源码起始行（锚来自渲染期 data-line-no，
+// 与块编辑共用同一套行号；打印/PDF 由样式排除）
+let lineNumsOn = () => localStorage.getItem("mdr-linenums") === "on";
+function applyLineNums() {
+  const on = lineNumsOn();
+  document.body.classList.toggle("linenums", on);
+  document.querySelector("#btn-linenum").classList.toggle("on", on);
+}
+document.querySelector("#btn-linenum").addEventListener("click", () => {
+  localStorage.setItem("mdr-linenums", lineNumsOn() ? "off" : "on");
+  applyLineNums();
+});
+applyLineNums();
 
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {

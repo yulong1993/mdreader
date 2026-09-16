@@ -79,6 +79,12 @@ body {
   font-size: 15px;
   padding: 4px 9px;
 }
+/* 开关型图标按钮的"打开"态（行号栏等） */
+.tb-btn.icon.on {
+  color: var(--accent);
+  border-color: var(--border);
+  background: var(--hover);
+}
 
 #file-name {
   font-size: 13px;
@@ -446,6 +452,37 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* ------------------------------- 行号栏（可选） ------------------------------- */
+
+/* 源码行号：渲染期挂在 data-line 锚上（与块编辑同一套锚），用 ::before 画在
+   块左缘外侧，右对齐成一列 gutter；正文版心让出 45px 放号码。table/pre 自身
+   是横向滚动容器（github-markdown-css / 折行兜底），会裁掉越界的绝对定位
+   伪元素——开启行号时放行 overflow：单元格与代码内容本就强制折行，
+   实际不会溢出，横向兜底仍在 #preview-pane */
+body.linenums .markdown-body {
+  padding-left: 90px;
+}
+body.linenums .markdown-body [data-line-no] {
+  position: relative;
+}
+body.linenums .markdown-body [data-line-no]::before {
+  content: attr(data-line-no);
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 0;
+  font-family: var(--code-font);
+  font-size: 12px;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+body.linenums .markdown-body pre,
+body.linenums .markdown-body table {
+  overflow: visible;
+}
+
 /* --------------------------------- 实时编辑 -------------------------------- */
 
 /* 编辑模式：块可点击进入编辑，悬停给虚线提示 */
@@ -586,6 +623,13 @@ pre.mermaid-error {
   .markdown-body {
     max-width: none;
     padding: 0;
+  }
+  /* 行号是屏幕辅助信息，不进 PDF/打印 */
+  body.linenums .markdown-body {
+    padding-left: 0;
+  }
+  body.linenums .markdown-body [data-line-no]::before {
+    content: none;
   }
   pre {
     white-space: pre-wrap;
