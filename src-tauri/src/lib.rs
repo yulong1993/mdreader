@@ -311,7 +311,28 @@ mod dragffi {
         fn GetAsyncKeyState(key: i32) -> i16;
         fn GetWindow(hwnd: isize, cmd: u32) -> isize;
     }
+
+    /// 测试后门（TEST-ONLY）：设了 MDR_DRAG_SIM 环境变量时，光标与按键状态
+    /// 改读该文件（内容 "x y down"，物理像素），供 e2e 确定性驱动标签拖拽；
+    /// 未设置时首次探测后短路，不影响真实输入。发布运行不会带此变量。
+    fn sim_state() -> Option<(i32, i32, bool)> {
+        static SIM: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        let path = SIM
+            .get_or_init(|| std::env::var_os("MDR_DRAG_SIM").map(std::path::PathBuf::from))
+            .as_ref()?;
+        let s = std::fs::read_to_string(path).ok()?;
+        let mut it = s.split_whitespace();
+        Some((
+            it.next()?.parse().ok()?,
+            it.next()?.parse().ok()?,
+            it.next()?.parse::<u8>().ok()? == 1,
+        ))
+    }
+
     pub fn cursor() -> Option<(i32, i32)> {
+        if let Some((x, y, _)) = sim_state() {
+            return Some((x, y));
+        }
         unsafe {
             let mut p = Point { x: 0, y: 0 };
             if GetCursorPos(&mut p) != 0 {
@@ -322,6 +343,9 @@ mod dragffi {
         }
     }
     pub fn lbutton_down() -> bool {
+        if let Some((_, _, down)) = sim_state() {
+            return down;
+        }
         unsafe { (GetAsyncKeyState(0x01) as u16) & 0x8000 != 0 }
     }
     /// a 是否在 b 的上层（沿顶层 Z 序链从 a 向下走，遇到 b 即 b 在 a 之下）。
