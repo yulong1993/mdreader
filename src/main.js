@@ -491,6 +491,7 @@ function forceExitEditState() {
   editing = false;
   activeBlockEdit = null;
   pendingOpenBlockKey = null;
+  pendingOpenSel = null;
   document.body.classList.remove("editing");
   document.querySelector("#btn-edit").textContent = "✏️ 编辑";
 }
@@ -1021,6 +1022,7 @@ let suppressFsOnce = false; // 自己保存触发的 fs-changed 不再回灌
 let htmlBlockRuns = []; // html_block 的行号登记（原始 HTML 挂不了锚，兜底定位用）
 let activeBlockEdit = null; // 正在编辑的块 { ta, key, s, e, orig, origEl }
 let pendingOpenBlockKey = null; // 提交当前块后要接着打开的块（"s-e" 键，块间跳转用）
+let pendingOpenSel = null; // 随块跳转携带的源码光标/选区（点哪改哪）
 
 /* --------------------------------- 路径解析缓存 -------------------------------- */
 
@@ -1089,12 +1091,14 @@ function commitActiveBlock() {
   if (!ed) return null;
   const norm = (s) => s.replace(/\r?\n/g, "\n");
   if (norm(ed.ta.value) === norm(ed.orig)) {
-    ed.ta.replaceWith(ed.origEl);
+    ed.wrap.replaceWith(ed.origEl);
     activeBlockEdit = null;
     if (pendingOpenBlockKey != null) {
       const key = pendingOpenBlockKey;
+      const sel = pendingOpenSel;
       pendingOpenBlockKey = null;
-      openBlockEditByKey(key);
+      pendingOpenSel = null;
+      openBlockEditByKey(key, sel);
     }
     return null;
   }
@@ -1109,7 +1113,241 @@ function cancelActiveBlock() {
   const ed = activeBlockEdit;
   if (!ed) return;
   activeBlockEdit = null;
-  ed.ta.replaceWith(ed.origEl);
+  ed.wrap.replaceWith(ed.origEl);
+}
+
+/* ----------------- 块编辑器：排版继承 + 源码标记淡化（Obsidian 式） ----------------- */
+
+/** 行内 Markdown 标记的识别（best-effort 正则，服务于背板淡化与光标映射） */
+const BE_INLINE_MD = new RegExp(
+  [
+    "!\\[\\[[^\\]]*\\]\\]", // ![[嵌入]]：整体是标记（渲染为媒体，无文字）
+    "\\[\\[[^\\]]*\\]\\]", // [[双链]]：别名单独拆为内容
+    "!\\[[^\\]]*\\]\\([^)]*\\)", // ![图片](url)：整体标记
+    "\\[[^\\]]*\\]\\([^)]*\\)", // [链接](url)：链接文字单独拆为内容
+    "<\\/?[a-zA-Z][^<>]*>", // HTML 标签：整体标记
+    "`+", // 行内代码定界符
+    "\\${1,2}", // 公式定界符
+    "\\*{1,3}", // 强调定界符
+    "_{1,3}",
+    "==", // ==高亮==
+    "~~", // ~~删除线~~
+    "\\|", // 表格竖线
+  ].join("|"),
+  "g"
+);
+const BE_LINE_MD = /^(\s*)(#{1,6}[ \t]+|>+[ \t]*|[-*+][ \t]+\[[ xX]\][ \t]+|[-*+][ \t]+|\d+\.[ \t]+)/;
+const BE_FENCE_MD = /^\s*(```+|~~~+)/;
+const BE_TSEP_MD = /^\|?[ \t:*-]*-{3,}[ \t:|-]*\|?$/; // 表格分隔行
+
+/** 一行源码 → 片段序列 [{t:"md"|"c", s, e}]：md = 渲染后不出现的标记字符，
+ *  c = 渲染后出现的内容字符。光标映射（列换算）与背板淡化共用此扫描。 */
+function scanLineSegments(line) {
+  const segs = [];
+  const md = (s, e) => e > s && segs.push({ t: "md", s, e });
+  const c = (s, e) => e > s && segs.push({ t: "c", s, e });
+  if (BE_FENCE_MD.test(line) || BE_TSEP_MD.test(line)) {
+    md(0, line.length);
+    return segs;
+  }
+  const head = line.match(BE_LINE_MD);
+  let i = 0;
+  if (head) {
+    md(0, head[0].length);
+    i = head[0].length;
+  }
+  let last = 0;
+  for (const m of line.slice(i).matchAll(BE_INLINE_MD)) {
+    const s = i + m.index;
+    const e = s + m[0].length;
+    const g = m[0];
+    c(i + last, s);
+    if (g.startsWith("[[") && g.includes("|")) {
+      const bar = g.indexOf("|");
+      md(s, s + bar + 1);
+      c(s + bar + 1, e - 2);
+      md(e - 2, e);
+    } else if (g.startsWith("[[")) {
+      md(s, s + 2);
+      c(s + 2, e - 2);
+      md(e - 2, e);
+    } else if (g.startsWith("[") && g.includes("](")) {
+      const rb = g.indexOf("]");
+      md(s, s + 1);
+      c(s + 1, s + rb);
+      md(s + rb, e);
+    } else {
+      md(s, e);
+    }
+    last = m.index + g.length;
+  }
+  c(i + last, line.length);
+  return segs;
+}
+
+/** 背板 HTML：内容字符透明占位（真正文字画在 textarea 上，输入法合成文本可见），
+ *  标记字符淡化。两层字体度量一致，逐字符对齐。 */
+function highlightBackdropHTML(src) {
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let html = "";
+  src.split("\n").forEach((line, idx) => {
+    if (idx) html += "\n";
+    for (const g of scanLineSegments(line)) {
+      html += `<span class="${g.t === "md" ? "be-md" : "be-t"}">${esc(line.slice(g.s, g.e))}</span>`;
+    }
+  });
+  return html + "\n"; // 尾行占位：与 textarea 的末尾换行度量对齐
+}
+
+/** 构造块编辑器 DOM：背板 pre + textarea，排版继承被编辑块——
+ *  标题编辑时依旧大号粗体（fence 场景 wrapper 替换 <pre> 内层的 <code>，
+ *  底色/圆角由原生 pre 提供；mermaid 容器则整体替换）。 */
+function buildBlockEditor(src, el) {
+  const cs = getComputedStyle(el);
+  const codey =
+    el.tagName === "CODE" || el.tagName === "PRE" || el.classList?.contains("mermaid-figure");
+  const inPre = el.tagName === "CODE";
+  const wrap = document.createElement("div");
+  wrap.className = "block-editor" + (codey ? " be-code" : "");
+  wrap.style.fontFamily = codey ? "var(--code-font)" : cs.fontFamily;
+  wrap.style.fontSize = cs.fontSize;
+  wrap.style.fontWeight = cs.fontWeight;
+  wrap.style.lineHeight = cs.lineHeight;
+  if (cs.letterSpacing !== "normal") wrap.style.letterSpacing = cs.letterSpacing;
+  if (!inPre) wrap.style.margin = cs.margin; // 沿用块自身的上下边距，文档律动不跳
+  const padL = inPre ? "0" : cs.paddingLeft; // 引用块等自带左衬垫，保持文字起点
+  const hl = document.createElement("pre");
+  hl.className = "be-hl";
+  hl.setAttribute("aria-hidden", "true");
+  hl.innerHTML = highlightBackdropHTML(src);
+  const ta = document.createElement("textarea");
+  ta.className = "be-ta";
+  ta.spellcheck = false;
+  ta.value = src;
+  ta.style.paddingLeft = padL;
+  hl.style.paddingLeft = padL;
+  wrap.append(hl, ta);
+  const refreshHl = () => {
+    if (ta.value.length <= 20000) hl.innerHTML = highlightBackdropHTML(ta.value);
+  };
+  return { wrap, ta, refreshHl };
+}
+
+/** 双击/单击的落点（渲染形态）→ 源码区间 {start,end}。
+ *  事件选区或 caretRangeFromPoint → 行容器内的平铺列 → 行内标记表换算源码列。
+ *  best-effort：实体/emoji 简写/嵌套表格等不精确场景就近吸附，绝不越界。 */
+function eventToSourceRange(el, ev, src) {
+  try {
+    const sel = window.getSelection();
+    let pts = [];
+    if (sel && !sel.isCollapsed && el.contains(sel.anchorNode) && el.contains(sel.focusNode)) {
+      pts = [
+        [sel.anchorNode, sel.anchorOffset],
+        [sel.focusNode, sel.focusOffset],
+      ];
+    } else {
+      const r = document.caretRangeFromPoint(ev.clientX, ev.clientY);
+      if (r && el.contains(r.startContainer)) pts = [[r.startContainer, r.startOffset]];
+    }
+    if (!pts.length) return null;
+    const lines = src.split("\n");
+    // 端点 → (行, 列)，按渲染位置排序：靠前的端点做"跳右"映射（选区不含前导
+    // 标记），靠后的端点不跳（不吞尾部标记）；光标点按跳右处理
+    const poses = pts
+      .map(([node, off]) => {
+        const { k, container } = flatKInContainer(el, node, off);
+        return decomposeK(el, container, k, lines);
+      })
+      .sort((a, b) => a.line - b.line || a.col - b.col);
+    const abs = poses.map((p, i) => {
+      const line = Math.min(p.line, lines.length - 1);
+      const col = colToSourceCol(lines[line], p.col, i === 0);
+      let a = col;
+      for (let li = 0; li < line; li++) a += lines[li].length + 1;
+      return a;
+    });
+    const n = src.length;
+    const clamp = (v) => Math.max(0, Math.min(n, v));
+    const a = clamp(abs[0]);
+    const b = clamp(abs.length > 1 ? abs[1] : abs[0]);
+    return { start: Math.min(a, b), end: Math.max(a, b) };
+  } catch {
+    return null;
+  }
+}
+
+const BE_LINE_TAGS = /^(P|LI|H[1-6]|SUMMARY|TR|TD|TH|DT|DD)$/;
+
+/** 渲染节点偏移 → 行内平铺列（含所在行容器） */
+function flatKInContainer(el, node, off) {
+  // 行容器：光标所在文本最近的行级祖先；一路到 el 都没有则 el 自身是行容器
+  let lineEl = node.nodeType === 1 ? node : node.parentElement;
+  while (lineEl && lineEl !== el && !BE_LINE_TAGS.test(lineEl.tagName)) {
+    lineEl = lineEl.parentElement;
+  }
+  const container = lineEl || el;
+  let k = 0;
+  let found = false;
+  const walk = (n) => {
+    if (found) return;
+    if (n === node) {
+      k += off;
+      found = true;
+      return;
+    }
+    if (n.nodeType === 3) {
+      k += n.data.length;
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    for (const c of n.childNodes) {
+      walk(c);
+      if (found) return;
+    }
+  };
+  walk(container);
+  return { k, container };
+}
+
+/** 行内平铺列 → (源码行号, 行内内容列)。 */
+function decomposeK(el, container, k, lines) {
+  if (container === el) {
+    // 段落/标题自身是行容器：内部软换行（文本节点里的 \n）对应源码换行
+    for (let li = 0; li < lines.length; li++) {
+      const L = lines[li];
+      if (k <= L.length) return { line: li, col: k };
+      k -= L.length + 1;
+      if (li === lines.length - 1) return { line: li, col: L.length };
+    }
+    return { line: 0, col: 0 };
+  }
+  // 列表/表格等：行号 = el 内排在 container 之前的行级元素个数（文档序；
+  // callout 标题行不是 P/LI，用 .oc-title 一并计入）
+  const all = el.querySelectorAll("p,li,h1,h2,h3,h4,h5,h6,summary,tr,dt,dd,.oc-title");
+  const idx = [...all].indexOf(container);
+  return { line: idx < 0 ? 0 : idx, col: k };
+}
+
+/** 行内内容列 → 源码列。jumpRight：列恰落在两个内容段边界时，起点侧跳过
+ *  中间标记（选词不含前导 **），终点侧不跳（不吞尾部 **）。 */
+function colToSourceCol(line, col, jumpRight) {
+  const segs = scanLineSegments(line);
+  let ci = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const g = segs[i];
+    if (g.t !== "c") continue;
+    const len = g.e - g.s;
+    if (col < ci + len) return g.s + (col - ci);
+    if (col === ci + len) {
+      if (!jumpRight) return g.e;
+      for (let j = i + 1; j < segs.length; j++) {
+        if (segs[j].t === "c") return segs[j].s;
+      }
+      return line.length;
+    }
+    ci += len;
+  }
+  return line.length;
 }
 
 function autoGrow(ta) {
@@ -1117,32 +1355,34 @@ function autoGrow(ta) {
   ta.style.height = `${ta.scrollHeight}px`;
 }
 
-/** 就地编辑一个块：range = { s, e } 源码行区间（e 为 slice 上界），el 为该块的渲染元素 */
-function openBlockEdit(range, el) {
+/** 就地编辑一个块：range = { s, e } 源码行区间（e 为 slice 上界），el 为该块的
+ *  渲染元素；sel 为可选的源码光标/选区（进入编辑时光标停在双击处） */
+function openBlockEdit(range, el, sel) {
   if (!range || !el?.isConnected) return;
   const { s, e } = range;
   if (!Number.isInteger(s) || !Number.isInteger(e) || e <= s) return;
   const src = currentSource.split("\n").slice(s, e).join("\n");
-  const ta = document.createElement("textarea");
-  ta.className = "block-editor";
-  ta.spellcheck = false;
-  ta.value = src;
-  activeBlockEdit = { ta, key: `${s}-${e}`, s, e, orig: src, origEl: el };
-  el.replaceWith(ta);
+  const { wrap, ta, refreshHl } = buildBlockEditor(src, el);
+  activeBlockEdit = { ta, wrap, key: `${s}-${e}`, s, e, orig: src, origEl: el };
+  el.replaceWith(wrap);
   autoGrow(ta);
   ta.focus();
-  ta.setSelectionRange(0, 0);
-  ta.addEventListener("input", () => autoGrow(ta));
+  if (sel && sel.end >= sel.start) ta.setSelectionRange(sel.start, sel.end);
+  else ta.setSelectionRange(0, 0);
+  ta.addEventListener("input", () => {
+    autoGrow(ta);
+    refreshHl();
+  });
   ta.addEventListener("keydown", onBlockKeydown);
   ta.addEventListener("blur", onBlockBlur);
 }
 
 /** 块间跳转：重渲染后按 "s-e" 键找回锚点元素接着打开 */
-function openBlockEditByKey(key) {
+function openBlockEditByKey(key, sel) {
   const el = els.content.querySelector(`[data-line="${key}"]`);
   if (!el) return;
   const [s, e] = key.split("-").map(Number);
-  openBlockEdit({ s, e }, el);
+  openBlockEdit({ s, e }, el, sel);
 }
 
 /** 原始 HTML 区（如 <details> 折叠块）没有锚，按其内部 markdown 锚的行号
@@ -1228,6 +1468,11 @@ document.addEventListener(
     if (editing && blk && !e.target.closest("a")) {
       e.preventDefault(); // 焦点与选区交给接下来的块编辑流程（链接点击除外——链接走导航）
       pendingOpenBlockKey = `${blk.s}-${blk.e}`;
+      pendingOpenSel = eventToSourceRange(
+        blk.el,
+        e,
+        currentSource.split("\n").slice(blk.s, blk.e).join("\n")
+      );
     }
     commitActiveBlock();
   },
@@ -1243,17 +1488,27 @@ els.content.addEventListener("click", (e) => {
   const blk = resolveEditableBlock(e.target);
   if (blk) {
     e.stopImmediatePropagation(); // 块编辑优先于折叠等原有交互
-    openBlockEdit({ s: blk.s, e: blk.e }, blk.el);
+    openBlockEdit(
+      { s: blk.s, e: blk.e },
+      blk.el,
+      eventToSourceRange(blk.el, e, currentSource.split("\n").slice(blk.s, blk.e).join("\n"))
+    );
   }
 });
 
-// 双击任意块：无需 Ctrl+E，直接进入编辑模式并打开该块
+// 双击任意块：无需 Ctrl+E，直接进入编辑模式并打开该块——光标/选区落在双击处
 els.content.addEventListener("dblclick", (e) => {
   if (e.target.closest("a") || e.target.closest(".block-editor")) return;
   const blk = resolveEditableBlock(e.target);
   if (!blk) return;
   if (!editing) setEditing(true);
-  if (!activeBlockEdit) openBlockEdit({ s: blk.s, e: blk.e }, blk.el);
+  if (!activeBlockEdit) {
+    openBlockEdit(
+      { s: blk.s, e: blk.e },
+      blk.el,
+      eventToSourceRange(blk.el, e, currentSource.split("\n").slice(blk.s, blk.e).join("\n"))
+    );
+  }
 });
 
 // 点击内容区空白处（不属于任何块/链接/编辑框）：落定修改并退出编辑模式
@@ -1420,8 +1675,10 @@ async function renderDoc(source) {
   if (pendingOpenBlockKey != null) {
     // 块间跳转：当前块落定重渲染后，接着打开用户点的那块
     const key = pendingOpenBlockKey;
+    const sel = pendingOpenSel;
     pendingOpenBlockKey = null;
-    openBlockEditByKey(key);
+    pendingOpenSel = null;
+    openBlockEditByKey(key, sel);
   }
 }
 
