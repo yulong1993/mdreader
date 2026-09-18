@@ -1065,13 +1065,17 @@ function setEditing(on) {
   document.querySelector("#btn-edit").textContent = on ? "👁 预览" : "✏️ 编辑";
 }
 
+/** 块编辑器的当前文本（CM 未装配完时等于原文） */
+const blockEditValue = (ed) => (ed.cm ? ed.cm.getValue() : ed.orig);
+
 /** 把正在编辑的块内容合入源码（纯数据操作；内容区由随后的重渲染重建） */
 function absorbActiveBlock(source) {
   const ed = activeBlockEdit;
   if (!ed) return source;
   activeBlockEdit = null;
+  ed.cm?.destroy();
   const norm = (s) => s.replace(/\r?\n/g, "\n");
-  let val = ed.ta.value;
+  let val = blockEditValue(ed);
   if (norm(val) === norm(ed.orig)) return source;
   // textarea 会把 \r\n 归一成 \n，CRLF 文档写回时还原行尾
   if (source.includes("\r\n")) val = val.replace(/\r?\n/g, "\r\n");
@@ -1090,7 +1094,8 @@ function commitActiveBlock() {
   const ed = activeBlockEdit;
   if (!ed) return null;
   const norm = (s) => s.replace(/\r?\n/g, "\n");
-  if (norm(ed.ta.value) === norm(ed.orig)) {
+  if (norm(blockEditValue(ed)) === norm(ed.orig)) {
+    ed.cm?.destroy();
     ed.wrap.replaceWith(ed.origEl);
     activeBlockEdit = null;
     if (pendingOpenBlockKey != null) {
@@ -1113,6 +1118,7 @@ function cancelActiveBlock() {
   const ed = activeBlockEdit;
   if (!ed) return;
   activeBlockEdit = null;
+  ed.cm?.destroy();
   ed.wrap.replaceWith(ed.origEl);
 }
 
@@ -1185,52 +1191,68 @@ function scanLineSegments(line) {
   return segs;
 }
 
-/** 背板 HTML：内容字符透明占位（真正文字画在 textarea 上，输入法合成文本可见），
- *  标记字符淡化。两层字体度量一致，逐字符对齐。 */
-function highlightBackdropHTML(src) {
-  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  let html = "";
-  src.split("\n").forEach((line, idx) => {
-    if (idx) html += "\n";
-    for (const g of scanLineSegments(line)) {
-      html += `<span class="${g.t === "md" ? "be-md" : "be-t"}">${esc(line.slice(g.s, g.e))}</span>`;
-    }
-  });
-  return html + "\n"; // 尾行占位：与 textarea 的末尾换行度量对齐
+/** 背板已由 CodeMirror 取代，仅保留行内标记扫描（光标映射用）。
+ *  CodeMirror 工厂懒加载：首次块编辑才 import，启动零开销。 */
+let cmFactory = null;
+async function ensureCmFactory() {
+  cmFactory ??= (await import("./cm-editor.js")).createBlockCM;
+  return cmFactory;
 }
 
-/** 构造块编辑器 DOM：背板 pre + textarea，排版继承被编辑块——
- *  标题编辑时依旧大号粗体（fence 场景 wrapper 替换 <pre> 内层的 <code>，
- *  底色/圆角由原生 pre 提供；mermaid 容器则整体替换）。 */
-function buildBlockEditor(src, el) {
+/** 构造块编辑器（CodeMirror 6）：排版继承被编辑块——标题编辑时依旧大号粗体。
+ *  wrapper 同步插入（防双击竞态），CM 异步装配。 */
+function openBlockEdit(range, el, sel) {
+  if (!range || !el?.isConnected) return;
+  const { s, e } = range;
+  if (!Number.isInteger(s) || !Number.isInteger(e) || e <= s) return;
+  const src = currentSource.split("\n").slice(s, e).join("\n");
   const cs = getComputedStyle(el);
   const codey =
     el.tagName === "CODE" || el.tagName === "PRE" || el.classList?.contains("mermaid-figure");
-  const inPre = el.tagName === "CODE";
+  const inPre = el.tagName === "CODE"; // fence：wrapper 替换 <pre> 内层的 <code>，外观由原生 pre 提供
   const wrap = document.createElement("div");
   wrap.className = "block-editor" + (codey ? " be-code" : "");
+  // 排版继承：行内样式挂在 wrapper 上（带引号的字体栈只有行内样式不会被 CSSOM 丢弃）
   wrap.style.fontFamily = codey ? "var(--code-font)" : cs.fontFamily;
   wrap.style.fontSize = cs.fontSize;
   wrap.style.fontWeight = cs.fontWeight;
   wrap.style.lineHeight = cs.lineHeight;
   if (cs.letterSpacing !== "normal") wrap.style.letterSpacing = cs.letterSpacing;
   if (!inPre) wrap.style.margin = cs.margin; // 沿用块自身的上下边距，文档律动不跳
-  const padL = inPre ? "0" : cs.paddingLeft; // 引用块等自带左衬垫，保持文字起点
-  const hl = document.createElement("pre");
-  hl.className = "be-hl";
-  hl.setAttribute("aria-hidden", "true");
-  hl.innerHTML = highlightBackdropHTML(src);
-  const ta = document.createElement("textarea");
-  ta.className = "be-ta";
-  ta.spellcheck = false;
-  ta.value = src;
-  ta.style.paddingLeft = padL;
-  hl.style.paddingLeft = padL;
-  wrap.append(hl, ta);
-  const refreshHl = () => {
-    if (ta.value.length <= 20000) hl.innerHTML = highlightBackdropHTML(ta.value);
-  };
-  return { wrap, ta, refreshHl };
+  activeBlockEdit = { wrap, cm: null, key: `${s}-${e}`, s, e, orig: src, origEl: el };
+  el.replaceWith(wrap);
+
+  ensureCmFactory()
+    .then((create) => {
+      if (activeBlockEdit?.wrap !== wrap) return; // 装配期间已被提交/取消
+      const cm = create({
+        doc: src,
+        onEscape: cancelActiveBlock,
+        onCommit: () => commitActiveBlock(),
+        onInternalBlur: () => {
+          if (activeBlockEdit) commitActiveBlock();
+        },
+      });
+      activeBlockEdit.cm = cm;
+      wrap.append(cm.dom);
+      cm.focus();
+      if (sel && sel.end >= sel.start) cm.setSelection(sel.start, sel.end);
+      else cm.setSelection(0, 0);
+    })
+    .catch((err) => {
+      if (activeBlockEdit?.wrap === wrap) {
+        wrap.textContent = src; // CM 加载失败兜底：至少可读
+        console.error("块编辑器加载失败", err);
+      }
+    });
+}
+
+/** 块间跳转：重渲染后按 "s-e" 键找回锚点元素接着打开 */
+function openBlockEditByKey(key, sel) {
+  const el = els.content.querySelector(`[data-line="${key}"]`);
+  if (!el) return;
+  const [s, e] = key.split("-").map(Number);
+  openBlockEdit({ s, e }, el, sel);
 }
 
 /** 双击/单击的落点（渲染形态）→ 源码区间 {start,end}。
@@ -1312,12 +1334,17 @@ function flatKInContainer(el, node, off) {
 /** 行内平铺列 → (源码行号, 行内内容列)。 */
 function decomposeK(el, container, k, lines) {
   if (container === el) {
-    // 段落/标题自身是行容器：内部软换行（文本节点里的 \n）对应源码换行
+    // 段落/标题自身是行容器：内部软换行（文本节点里的 \n）对应源码换行。
+    // 平铺列数的是渲染字符，行边界要按"内容字符数"（标记剥离后）比较
+    let rem = k;
     for (let li = 0; li < lines.length; li++) {
-      const L = lines[li];
-      if (k <= L.length) return { line: li, col: k };
-      k -= L.length + 1;
-      if (li === lines.length - 1) return { line: li, col: L.length };
+      const rl = scanLineSegments(lines[li]).reduce(
+        (n, g) => n + (g.t === "c" ? g.e - g.s : 0),
+        0
+      );
+      if (rem <= rl) return { line: li, col: rem };
+      rem -= rl + 1;
+      if (li === lines.length - 1) return { line: li, col: rl };
     }
     return { line: 0, col: 0 };
   }
@@ -1348,41 +1375,6 @@ function colToSourceCol(line, col, jumpRight) {
     ci += len;
   }
   return line.length;
-}
-
-function autoGrow(ta) {
-  ta.style.height = "auto";
-  ta.style.height = `${ta.scrollHeight}px`;
-}
-
-/** 就地编辑一个块：range = { s, e } 源码行区间（e 为 slice 上界），el 为该块的
- *  渲染元素；sel 为可选的源码光标/选区（进入编辑时光标停在双击处） */
-function openBlockEdit(range, el, sel) {
-  if (!range || !el?.isConnected) return;
-  const { s, e } = range;
-  if (!Number.isInteger(s) || !Number.isInteger(e) || e <= s) return;
-  const src = currentSource.split("\n").slice(s, e).join("\n");
-  const { wrap, ta, refreshHl } = buildBlockEditor(src, el);
-  activeBlockEdit = { ta, wrap, key: `${s}-${e}`, s, e, orig: src, origEl: el };
-  el.replaceWith(wrap);
-  autoGrow(ta);
-  ta.focus();
-  if (sel && sel.end >= sel.start) ta.setSelectionRange(sel.start, sel.end);
-  else ta.setSelectionRange(0, 0);
-  ta.addEventListener("input", () => {
-    autoGrow(ta);
-    refreshHl();
-  });
-  ta.addEventListener("keydown", onBlockKeydown);
-  ta.addEventListener("blur", onBlockBlur);
-}
-
-/** 块间跳转：重渲染后按 "s-e" 键找回锚点元素接着打开 */
-function openBlockEditByKey(key, sel) {
-  const el = els.content.querySelector(`[data-line="${key}"]`);
-  if (!el) return;
-  const [s, e] = key.split("-").map(Number);
-  openBlockEdit({ s, e }, el, sel);
 }
 
 /** 原始 HTML 区（如 <details> 折叠块）没有锚，按其内部 markdown 锚的行号
@@ -1437,26 +1429,8 @@ function resolveEditableBlock(target) {
   return r ? { el: top, s: r.s, e: r.e } : null;
 }
 
-function onBlockKeydown(e) {
-  if (!activeBlockEdit) return;
-  if (e.key === "Escape") {
-    e.preventDefault();
-    cancelActiveBlock(); // 放弃本块的修改
-  } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    commitActiveBlock(); // Ctrl+Enter 提交
-  } else if (e.key === "Tab") {
-    e.preventDefault();
-    const { selectionStart: a, selectionEnd: b } = e.target;
-    e.target.setRangeText("  ", a, b, "end");
-    autoGrow(e.target);
-  }
-}
-
-// 切到其他应用（relatedTarget 为 null）不打断编辑；点到应用内其他位置则先落定
-function onBlockBlur(e) {
-  if (activeBlockEdit && e.relatedTarget !== null) commitActiveBlock();
-}
+// Esc / Ctrl+Enter / Tab 已由 CodeMirror keymap 处理（cm-editor.js）；
+// 焦点离开编辑器（应用内）走 onInternalBlur → 提交
 
 // 点到应用内任意位置：正编辑某块时先落定；编辑模式下点到另一个块，落定后接着打开那块
 document.addEventListener(

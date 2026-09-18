@@ -494,56 +494,47 @@ body.editing #content > *:not(.block-editor):hover {
   outline-offset: 3px;
 }
 
-/* 块编辑器（Obsidian 式排版继承）：wrapper 承载继承来的排版（字号/字重/行高/
-   边距来自被编辑块），textarea 画真实文字（输入法合成文本可见），背板 pre 画同一段
-   源码——标记字符淡化、内容字符透明占位。两层度量一致才能逐字符对齐 */
+/* 块编辑器（CodeMirror 6，Obsidian Live Preview 式）：排版继承被编辑块
+   （字号/字重/行高由 cm-editor.js 按 computed style 注入主题） */
 .block-editor {
   position: relative;
 }
-#content .block-editor .be-hl,
-#content .block-editor .be-ta {
-  display: block;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  font-family: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  letter-spacing: inherit;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: normal;
-  tab-size: 2;
-}
-#content .block-editor .be-hl {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  color: transparent; /* 内容字符透明占位 */
-  background: none;
-  z-index: 0;
-}
-#content .block-editor .be-hl .be-md {
-  color: color-mix(in srgb, var(--fg) 42%, transparent); /* 标记淡化 */
-}
-#content .block-editor .be-ta {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  min-height: 1.6em;
+.block-editor .cm-editor {
   background: transparent;
-  color: var(--fg);
-  caret-color: var(--fg);
-  resize: none;
-  outline: none;
-  overflow: hidden;
 }
-/* 代码类块（fence/mermaid）：等宽字体（fence 场景 wrapper 位于原生 <pre> 内，
-   底色/圆角由 pre 提供） */
-.block-editor.be-code {
+.block-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.block-editor .cm-scroller {
+  overflow: visible;
+}
+.block-editor .cm-content {
+  padding: 0;
+  caret-color: var(--fg);
+}
+/* 行内内容按渲染样式呈现（WYSIWYG 感） */
+.block-editor .be-md {
+  color: color-mix(in srgb, var(--fg) 42%, transparent); /* 语法标记淡化 */
+}
+.block-editor .be-strong {
+  font-weight: 700;
+}
+.block-editor .be-em {
+  font-style: italic;
+}
+.block-editor .be-strike {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--fg) 55%, transparent);
+}
+.block-editor .be-code {
   font-family: var(--code-font);
+  font-size: 0.94em;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+.block-editor .be-link {
+  color: var(--accent);
 }
 
 /* GitHub 版心：980px 内容宽 + 45px 内边距 */
