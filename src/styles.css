@@ -498,6 +498,14 @@ body.editing #content > *:not(.block-editor):hover {
    （字号/字重/行高由 cm-editor.js 按 computed style 注入主题） */
 .block-editor {
   position: relative;
+  border-radius: 6px;
+}
+/* 编辑态的可见指示：正编辑的块周围一圈蓝框（outline 不占布局，开/关无跳动；
+   退出编辑或提交后编辑器消失，框随之消失） */
+body.editing .block-editor {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 .block-editor .cm-editor {
   background: transparent;
