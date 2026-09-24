@@ -1107,10 +1107,27 @@ function commitActiveBlock() {
     }
     return null;
   }
+  // 提交前的现场：编辑块的视口位置与滚动位置（absorb 会拆掉编辑器 DOM，先量好）
+  const pane = els.previewPane;
+  const stBefore = pane.scrollTop;
+  const topBefore = ed.wrap.getBoundingClientRect().top;
+  // 被编辑块行数变化会平移后续块的行号锚：块间跳转的 pending 键跟着平移，
+  // 否则"改完上块（变高/变矮）再点下块"会按旧行号找不到块，点了没反应
+  const shift = blockEditValue(ed).split("\n").length - (ed.e - ed.s);
   currentSource = absorbActiveBlock(currentSource);
+  if (shift && pendingOpenBlockKey != null) {
+    const [ps, pe] = pendingOpenBlockKey.split("-").map(Number);
+    if (ps >= ed.e) pendingOpenBlockKey = `${ps + shift}-${pe + shift}`;
+  }
   return renderDoc(currentSource).then(() => {
-    // 编辑块的起始行不变（splice 原位替换），按前缀匹配重渲染后的新键
-    els.content.querySelector(`[data-line^="${ed.s}-"]`)?.scrollIntoView({ block: "nearest" });
+    // 原位重渲染后不把用户拉回旧块（scrollIntoView 会把已滚走的视野拽回去）：
+    // 只补偿被编辑块自身高度变化引起的位移，其余滚动位置原样保留
+    const nb = els.content.querySelector(`[data-line^="${ed.s}-"]`);
+    const delta = nb ? nb.getBoundingClientRect().top - topBefore : 0;
+    if (delta) {
+      pane.style.scrollBehavior = "auto";
+      pane.scrollTop = stBefore + delta;
+    }
   });
 }
 
@@ -1433,9 +1450,11 @@ function resolveEditableBlock(target) {
 // 焦点离开编辑器（应用内）走 onInternalBlur → 提交
 
 // 点到应用内任意位置：正编辑某块时先落定；编辑模式下点到另一个块，落定后接着打开那块
+let editorMousedown = false; // 本次点击的 mousedown 是否起于块编辑器内（拖选文字越界时的收尾不算"点空白"）
 document.addEventListener(
   "mousedown",
   (e) => {
+    editorMousedown = !!e.target.closest?.(".block-editor");
     if (!activeBlockEdit || !e.target.closest) return;
     if (e.target.closest(".block-editor")) return;
     const blk = resolveEditableBlock(e.target);
@@ -1488,6 +1507,8 @@ els.content.addEventListener("dblclick", (e) => {
 // 点击内容区空白处（不属于任何块/链接/编辑框）：落定修改并退出编辑模式
 els.previewPane.addEventListener("click", (e) => {
   if (!editing) return;
+  // 拖选文字的收尾（按下点在编辑器内，或存在选区）不退出——否则框外松手就会误关编辑
+  if (editorMousedown || window.getSelection().toString()) return;
   if (resolveEditableBlock(e.target) || e.target.closest(".block-editor") || e.target.closest("a")) {
     return;
   }

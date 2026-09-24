@@ -135,9 +135,10 @@ export function createBlockCM(opts) {
     dom: view.dom,
     getValue: () => view.state.doc.toString(),
     setSelection: (start, end) =>
+      // 不带 scrollIntoView：编辑器总在用户点击处打开（本就可见）；
+      // CM 在 overflow:visible 的自适高布局下会把滚动传导给外层容器，造成视野突跳
       view.dispatch({
         selection: { anchor: start, head: end },
-        scrollIntoView: true,
       }),
     focus: () => view.focus(),
     destroy: () => view.destroy(),

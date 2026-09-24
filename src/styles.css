@@ -436,6 +436,7 @@ body {
   overflow-y: auto;
   overflow-x: auto; /* 可见兜底：真有超宽内容时出现横向滚动条，绝不静默裁切 */
   scroll-behavior: smooth;
+  overflow-anchor: none; /* 滚动补偿由块编辑提交逻辑精确接管（见 commitActiveBlock），避免双重补偿 */
 }
 
 /* 代码块内容折行：阅读器以"读完"为先——评测文档的 ```text 块实际是 agent
