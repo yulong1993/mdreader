@@ -1,6 +1,6 @@
 [package]
 name = "mdreader"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight GitHub-style Markdown reader for Windows"
 authors = ["mdreader"]
 license = "MIT"

@@ -120,8 +120,8 @@ npm run tauri build
 
 产物在 `src-tauri/target/release/bundle/`：
 
-- `nsis/mdreader_0.1.0_x64-setup.exe` —— 推荐安装（含 `.md` 文件关联）
-- `msi/mdreader_0.1.0_x64_en-US.msi` —— MSI 安装包
+- `nsis/mdreader_0.2.0_x64-setup.exe` —— 推荐安装（含 `.md` 文件关联）
+- `msi/mdreader_0.2.0_x64_en-US.msi` —— MSI 安装包
 - `../mdreader.exe` —— 单文件绿色版
 
 ## 绿色版部署
